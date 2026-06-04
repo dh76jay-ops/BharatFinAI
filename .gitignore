@@ -3,3 +3,6 @@ venv/
 __pycache__/
 *.pyc
 feedback.csv
+data/portfolio.csv
+data/watchlist.csv
+data/feedback.csv

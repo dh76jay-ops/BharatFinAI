@@ -17,7 +17,7 @@ import os
 
 try:
     from dotenv import load_dotenv
-    load_dotenv()
+    load_dotenv(override=True)
 except:
     pass
 
@@ -49,6 +49,103 @@ with st.sidebar:
     st.divider()
     st.caption("⚠️ Sirf educational purpose.\nInvest apni research ke baad karein.")
 
+    WATCHLIST_FILE = "data/watchlist.csv"
+
+if not os.path.exists(WATCHLIST_FILE):
+    pd.DataFrame(columns=["Symbol"]).to_csv(WATCHLIST_FILE, index=False)
+
+PORTFOLIO_FILE = "data/portfolio.csv"
+
+if not os.path.exists(PORTFOLIO_FILE):
+    pd.DataFrame(
+        columns=["Symbol", "Quantity", "BuyPrice"]
+    ).to_csv(PORTFOLIO_FILE, index=False)
+
+# Portfolio File
+PORTFOLIO_FILE = "data/portfolio.csv"
+
+# Portfolio Section
+st.sidebar.divider()
+
+st.sidebar.subheader("💼 Portfolio")
+
+p_symbol = st.sidebar.text_input("Portfolio Stock", key="portfolio_stock")
+
+p_qty = st.sidebar.number_input(
+    "Quantity",
+    min_value=1,
+    step=1
+)
+
+p_buy = st.sidebar.number_input(
+    "Buy Price",
+    min_value=0.0,
+    step=1.0
+)
+
+if st.sidebar.button("Add To Portfolio"):
+
+    df_port = pd.read_csv(PORTFOLIO_FILE)
+
+    df_port.loc[len(df_port)] = [
+        p_symbol.upper(),
+        p_qty,
+        p_buy
+    ]
+
+    df_port.to_csv(PORTFOLIO_FILE, index=False)
+
+
+
+
+
+    st.sidebar.success("Portfolio Updated!")
+    st.sidebar.markdown("### 📊 Current Portfolio")
+
+df_port = pd.read_csv(PORTFOLIO_FILE)
+
+if len(df_port) > 0:
+    st.sidebar.dataframe(df_port, use_container_width=True)
+else:
+    st.sidebar.info("No stocks added")
+
+new_stock = st.sidebar.text_input("Add Stock Symbol", key="watchlist_stock_input")
+
+if st.sidebar.button("Add To Watchlist"):
+    df_watch = pd.read_csv(WATCHLIST_FILE)
+
+    if new_stock.upper() not in df_watch["Symbol"].values:
+        df_watch.loc[len(df_watch)] = [new_stock.upper()]
+        df_watch.to_csv(WATCHLIST_FILE, index=False)
+        st.sidebar.success("Added!")
+
+if "watch_stock" in st.session_state:
+    default_stock = st.session_state["watch_stock"]
+else:
+    default_stock = "RELIANCE"
+
+df_watch = pd.read_csv(WATCHLIST_FILE)
+
+st.sidebar.markdown("### My Watchlist")
+
+for stock in df_watch["Symbol"]:
+
+    col1, col2, col3 = st.sidebar.columns([3, 1, 1])
+
+    with col1:
+        st.write(f"📈 {stock}")
+
+    with col2:
+        if st.button("Go", key=f"go_{stock}"):
+            st.session_state["watch_stock"] = stock
+
+    with col3:
+        if st.button("❌", key=f"remove_{stock}"):
+            df_watch = df_watch[df_watch["Symbol"] != stock]
+            df_watch.to_csv(WATCHLIST_FILE, index=False)
+            st.sidebar.success(f"{stock} removed")
+            st.rerun()
+
 # ─────────────────────────────────────────
 # HEADER
 # ─────────────────────────────────────────
@@ -68,11 +165,7 @@ tab1, tab2, tab3 = st.tabs([
     "💬 Feedback"
 ])
 
-tab1, tab2, tab3 = st.tabs([
-    "🔍 Single Stock Analysis",
-    "📊 Multi-Stock Scanner",
-    "💬 Feedback"
-])
+
 
 with tab3:
 
@@ -122,8 +215,13 @@ with tab3:
 with tab1:
     c1, c2, c3 = st.columns([3, 1.5, 1.5])
     with c1:
-        symbol = st.text_input("", placeholder="RELIANCE, TCS, HDFCBANK, INFY...",
-                               label_visibility="collapsed", key="single")
+        symbol = st.text_input(
+    "",
+    value=default_stock,
+    placeholder="RELIANCE, TCS, HDFCBANK, INFY...",
+    label_visibility="collapsed",
+    key="single"
+)
     with c2:
         user_type = st.selectbox("", ["College Student", "Beginner", "Experienced"],
                                  label_visibility="collapsed")
@@ -234,6 +332,9 @@ with tab1:
 
             with st.spinner("🧠 AI analysis kar raha hai..."):
                 try:
+                    st.write("API Loaded:", bool(api_key))
+                    st.write("Key Start:", api_key[:10])
+
                     client = Groq(api_key=api_key)
                     sma50 = latest['SMA_50'] if pd.notna(latest['SMA_50']) else 0
                     p_vs_50 = ((latest['Close'] - sma50) / sma50 * 100) if sma50 else 0
