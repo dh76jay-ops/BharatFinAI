@@ -106,6 +106,49 @@ df_port = pd.read_csv(PORTFOLIO_FILE)
 
 if len(df_port) > 0:
     st.sidebar.dataframe(df_port, use_container_width=True)
+    # Portfolio Summary
+
+    total_investment = (df_port["Quantity"] * df_port["BuyPrice"]).sum()
+
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### 📈 Portfolio Summary")
+
+    st.sidebar.metric(
+        "Total Investment",
+        f"₹{total_investment:,.2f}"
+    )
+    current_value = 0
+
+for _, row in df_port.iterrows():
+    try:
+        stock_symbol = row["Symbol"]
+        qty = row["Quantity"]
+
+        yf_symbol = stock_symbol if stock_symbol.endswith(".NS") else stock_symbol + ".NS"
+        ticker = yf.Ticker(yf_symbol)
+        hist = ticker.history(period="1d")
+
+        if not hist.empty:
+            current_price = hist["Close"].iloc[-1]
+            current_value += current_price * qty
+
+    except:
+        pass
+
+    profit_loss = current_value - total_investment
+    return_pct = (profit_loss / total_investment * 100) if total_investment > 0 else 0
+
+    st.sidebar.metric(
+        "Current Value",
+        f"₹{current_value:,.2f}"
+    )
+
+    st.sidebar.metric(
+        "Profit / Loss",
+        f"₹{profit_loss:,.2f}",
+        f"{return_pct:.2f}%"
+    )
+        
 else:
     st.sidebar.info("No stocks added")
 
@@ -127,6 +170,22 @@ else:
 df_watch = pd.read_csv(WATCHLIST_FILE)
 
 st.sidebar.markdown("### My Watchlist")
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 📈 Watchlist Live Prices")
+
+for stock in df_watch["Symbol"]:
+    try:
+        yf_symbol = stock if stock.endswith(".NS") else stock + ".NS"
+        hist = yf.Ticker(yf_symbol).history(period="1d")
+
+        if not hist.empty:
+            price = hist["Close"].iloc[-1]
+            st.sidebar.metric(stock, f"₹{price:,.2f}")
+        else:
+            st.sidebar.warning(f"{stock} data nahi mila")
+
+    except:
+        st.sidebar.warning(f"{stock} error")
 
 for stock in df_watch["Symbol"]:
 
