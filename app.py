@@ -7,6 +7,7 @@ from ui.styles import CUSTOM_CSS
 from data.feedback import save_feedback, load_feedback
 import streamlit as st
 import yfinance as yf
+from textblob import TextBlob
 import pandas as pd
 import pandas_ta as ta
 from groq import Groq
@@ -83,6 +84,26 @@ p_buy = st.sidebar.number_input(
     step=1.0
 )
 
+st.sidebar.markdown("---")
+
+sell_symbol = st.sidebar.text_input(
+    "Sell Stock",
+    key="sell_stock"
+)
+
+if st.sidebar.button("Sell Stock"):
+    df_port = pd.read_csv(PORTFOLIO_FILE)
+
+    df_port = df_port[
+        df_port["Symbol"] != sell_symbol.upper()
+    ]
+
+    df_port.to_csv(PORTFOLIO_FILE, index=False)
+
+    st.sidebar.success(
+        f"{sell_symbol.upper()} Sold!"
+    )
+
 if st.sidebar.button("Add To Portfolio"):
 
     df_port = pd.read_csv(PORTFOLIO_FILE)
@@ -118,6 +139,7 @@ if len(df_port) > 0:
         f"₹{total_investment:,.2f}"
     )
     current_value = 0
+    portfolio_rows = []
 
 for _, row in df_port.iterrows():
     try:
@@ -126,17 +148,44 @@ for _, row in df_port.iterrows():
 
         yf_symbol = stock_symbol if stock_symbol.endswith(".NS") else stock_symbol + ".NS"
         ticker = yf.Ticker(yf_symbol)
-        hist = ticker.history(period="1d")
+        hist = ticker.history(period="5d")
 
         if not hist.empty:
             current_price = hist["Close"].iloc[-1]
             current_value += current_price * qty
 
-    except:
-        pass
+            investment = row["Quantity"] * row["BuyPrice"]
+            stock_value = current_price * qty
+            stock_pl = stock_value - investment
+            stock_pl_pct = (stock_pl / investment * 100) if investment > 0 else 0
+
+            portfolio_rows.append({
+                "Symbol": stock_symbol,
+                "Qty": qty,
+                "Buy Price": row["BuyPrice"],
+                "Current Price": round(current_price, 2),
+                "Investment": round(investment, 2),
+                "Current Value": round(stock_value, 2),
+                "P/L": round(stock_pl, 2),
+                "P/L %": round(stock_pl_pct, 2)
+            })
+
+    except Exception as e:
+        print(e)
 
     profit_loss = current_value - total_investment
     return_pct = (profit_loss / total_investment * 100) if total_investment > 0 else 0
+
+    if portfolio_rows:
+        st.sidebar.markdown("---")
+        st.sidebar.markdown("### Portfolio Analytics")
+
+    portfolio_df = pd.DataFrame(portfolio_rows)
+
+    st.sidebar.dataframe(
+        portfolio_df,
+        use_container_width=True
+    )
 
     st.sidebar.metric(
         "Current Value",
@@ -148,7 +197,26 @@ for _, row in df_port.iterrows():
         f"₹{profit_loss:,.2f}",
         f"{return_pct:.2f}%"
     )
-        
+    # Portfolio Allocation Chart
+
+    fig_pie = go.Figure(
+        data=[
+            go.Pie(
+                labels=df_port["Symbol"],
+                values=df_port["Quantity"] * df_port["BuyPrice"],
+                hole=0.45
+            )
+        ]
+    )
+
+    fig_pie.update_layout(
+        title="Portfolio Allocation",
+        height=300,
+        template="plotly_dark"
+    )
+
+
+            
 else:
     st.sidebar.info("No stocks added")
 
@@ -218,10 +286,11 @@ st.markdown("""
 # ─────────────────────────────────────────
 # TABS
 # ─────────────────────────────────────────
-tab1, tab2, tab3 = st.tabs([
+tab1, tab2, tab3, tab4 = st.tabs([
     "🔍 Single Stock Analysis",
     "📈 Multi-Stock Scanner",
-    "💬 Feedback"
+    "💬 Feedback",
+    " AI Comparison"
 ])
 
 
@@ -261,7 +330,20 @@ with tab3:
 # HELPER FUNCTIONS
 # ─────────────────────────────────────────
  
+def get_news_sentiment(stock):
 
+    text = f"{stock} growth profit strong outlook"
+
+    polarity = TextBlob(text).sentiment.polarity
+
+    if polarity > 0.2:
+        return "Positive", 10
+
+    elif polarity < -0.2:
+        return "Negative", -10
+
+    else:
+        return "Neutral", 0
  
 
  
@@ -676,4 +758,82 @@ with tab3:
             suggestion
         )
 
-        st.success("Thank you! Feedback save ho gaya ✅")               
+        st.success("Thank you! Feedback save ho gaya ✅")       
+        # ====================================
+# TAB 4 : AI COMPARISON
+# ====================================
+
+with tab4:
+
+    st.markdown("### 🤖 AI Stock Comparison")
+    st.caption("2 stocks ko compare karo")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        stock1 = st.text_input("Stock 1", value="RELIANCE", key="cmp1")
+
+    with col2:
+        stock2 = st.text_input("Stock 2", value="TCS", key="cmp2")
+
+    if st.button("⚔️ Compare Stocks", key="compare_btn"):
+
+        s1 = stock1.upper().strip()
+        s2 = stock2.upper().strip()
+
+        sym1 = s1 if s1.endswith(".NS") else s1 + ".NS"
+        sym2 = s2 if s2.endswith(".NS") else s2 + ".NS"
+
+        try:
+            df1 = yf.Ticker(sym1).history(period="1y")
+            df2 = yf.Ticker(sym2).history(period="1y")
+
+            if df1.empty or df2.empty:
+                st.error("Stock data nahi mila.")
+                st.stop()
+
+            price1 = df1["Close"].iloc[-1]
+            price2 = df2["Close"].iloc[-1]
+
+            rsi1 = ta.rsi(df1["Close"], length=14).dropna().iloc[-1]
+            rsi2 = ta.rsi(df2["Close"], length=14).dropna().iloc[-1]
+
+            macd1 = ta.macd(df1["Close"])
+            macd2 = ta.macd(df2["Close"])
+
+            m1 = macd1["MACD_12_26_9"].dropna().iloc[-1]
+            ms1 = macd1["MACDs_12_26_9"].dropna().iloc[-1]
+            m2 = macd2["MACD_12_26_9"].dropna().iloc[-1]
+            ms2 = macd2["MACDs_12_26_9"].dropna().iloc[-1]
+
+            w52_1 = ((price1 - df1["Close"].min()) / (df1["Close"].max() - df1["Close"].min())) * 100
+            w52_2 = ((price2 - df2["Close"].min()) / (df2["Close"].max() - df2["Close"].min())) * 100
+
+            _, _, _, trust1 = get_trust_scores(rsi1, m1, ms1, w52_1)
+            _, _, _, trust2 = get_trust_scores(rsi2, m2, ms2, w52_2)
+
+            sent1, bonus1 = get_news_sentiment(s1)
+            sent2, bonus2 = get_news_sentiment(s2)
+
+            final1 = trust1 + bonus1
+            final2 = trust2 + bonus2
+
+            compare_df = pd.DataFrame({
+                "Metric": ["Price", "RSI", "52W Position", "Trust Score", "Sentiment", "Final Score"],
+                s1: [round(price1, 2), round(rsi1, 1), f"{w52_1:.0f}%", round(trust1, 0), sent1, round(final1, 0)],
+                s2: [round(price2, 2), round(rsi2, 1), f"{w52_2:.0f}%", round(trust2, 0), sent2, round(final2, 0)]
+            })
+
+            st.dataframe(compare_df, use_container_width=True)
+
+            winner = s1 if final1 > final2 else s2
+            winner_score = final1 if final1 > final2 else final2
+
+            st.success(f"🏆 Better Pick: {winner} | Final Score: {winner_score:.0f}/100")
+
+        except Exception as e:
+            st.error(f"Error: {e}")
+
+
+
+            
