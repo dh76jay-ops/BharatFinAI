@@ -406,9 +406,10 @@ with tab3:
 # ─────────────────────────────────────────
  
 def get_news_sentiment(stock):
-
     try:
-        newsapi = NewsApiClient(api_key=os.getenv("NEWS_API_KEY"))
+        newsapi = NewsApiClient(
+            api_key=os.getenv("NEWS_API_KEY")
+        )
 
         news = newsapi.get_everything(
             q=stock,
@@ -440,9 +441,8 @@ def get_news_sentiment(stock):
         else:
             return "Neutral", 0
 
-    except:
+    except Exception:
         return "Neutral", 0
- 
 
 
 
@@ -688,6 +688,37 @@ SUMMARY
                     )
                     analysis = response.choices[0].message.content
                     st.markdown(analysis)
+
+                    report_text = f"""
+                    BHARATFINAI STOCK REPORT
+
+                    Stock: {sym}
+                    Price: ₹{latest['Close']:.2f}
+                    RSI: {rsi_val:.1f}
+
+                    AI Analysis:
+                    {analysis}
+                    """
+
+                    st.download_button(
+                        "📄 Download Analysis Report",
+                        data=report_text,
+                        file_name=f"{sym}_report.txt",
+                        mime="text/plain"
+                    )
+
+                    # News Sentiment
+                    news_sentiment, news_score = get_news_sentiment(sym)
+
+                    st.divider()
+                    st.markdown("### 📰 News Sentiment")
+
+                    if news_sentiment == "Positive":
+                        st.success(f"🟢 Positive News Sentiment (+{news_score})")
+                    elif news_sentiment == "Negative":
+                        st.error(f"🔴 Negative News Sentiment ({news_score})")
+                    else:
+                        st.warning("🟡 Neutral News Sentiment")
 
                     # Trust Engine
                     st.divider()
@@ -992,9 +1023,347 @@ with tab4:
 
             st.success(f"🏆 Better Pick: {winner} | Final Score: {winner_score:.0f}/100")
 
+            st.markdown("### ⚔️ Multi-Stock Battle")
+
+            loser = s2 if winner == s1 else s1
+            loser_score = final2 if winner == s1 else final1
+            score_gap = abs(final1 - final2)
+
+            st.success(f"🥇 Winner: {winner} | Score: {winner_score:.0f}/100")
+            st.warning(f"🥈 Runner Up: {loser} | Score: {loser_score:.0f}/100")
+            st.info(f"📊 Score Difference: {score_gap:.0f} points")
+
+
         except Exception as e:
             st.error(f"Error: {e}")
 
+# -----------------------------------
+# PORTFOLIO TRACKER UPGRADE
+# -----------------------------------
 
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 📊 Portfolio Tracker")
 
-            
+df_port = pd.read_csv(PORTFOLIO_FILE)
+
+if len(df_port) > 0:
+    portfolio_rows = []
+    total_investment = 0
+    current_value = 0
+
+    for _, row in df_port.iterrows():
+        symbol = str(row["Symbol"]).upper()
+        qty = float(row["Quantity"])
+        buy_price = float(row["BuyPrice"])
+
+        try:
+            yf_symbol = symbol if symbol.endswith(".NS") else symbol + ".NS"
+            hist = yf.Ticker(yf_symbol).history(period="5d")
+
+            if not hist.empty:
+                current_price = hist["Close"].iloc[-1]
+                investment = qty * buy_price
+                value = qty * current_price
+                pnl = value - investment
+                pnl_pct = (pnl / investment) * 100 if investment > 0 else 0
+
+                total_investment += investment
+                current_value += value
+
+                portfolio_rows.append({
+                    "Stock": symbol,
+                    "Qty": qty,
+                    "Buy": round(buy_price, 2),
+                    "Current": round(current_price, 2),
+                    "Investment": round(investment, 2),
+                    "Value": round(value, 2),
+                    "P/L ₹": round(pnl, 2),
+                    "P/L %": round(pnl_pct, 2)
+                })
+
+        except Exception:
+            pass
+
+    if portfolio_rows:
+        portfolio_df = pd.DataFrame(portfolio_rows)
+
+        total_pnl = current_value - total_investment
+        total_pnl_pct = (total_pnl / total_investment) * 100 if total_investment > 0 else 0
+
+        st.sidebar.metric("Total Investment", f"₹{total_investment:,.2f}")
+        st.sidebar.metric("Current Value", f"₹{current_value:,.2f}")
+        st.sidebar.metric("Profit / Loss", f"₹{total_pnl:,.2f}", f"{total_pnl_pct:.2f}%")
+
+        st.sidebar.dataframe(portfolio_df, use_container_width=True)
+    else:
+        st.sidebar.info("Portfolio empty hai.")
+else:
+    st.sidebar.info("No stocks added.")
+
+            # -----------------------------------
+# WATCHLIST SCANNER
+# -----------------------------------
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 👀 Watchlist Scanner")
+
+watch_df = pd.read_csv(WATCHLIST_FILE)
+
+signals = []
+
+for stock in watch_df["Symbol"]:
+    try:
+        symbol = str(stock).upper()
+
+        yf_symbol = symbol if symbol.endswith(".NS") else symbol + ".NS"
+
+        df = yf.Ticker(yf_symbol).history(period="6mo")
+
+        if len(df) < 50:
+            continue
+
+        df["RSI"] = ta.rsi(df["Close"], length=14)
+
+        current = df["Close"].iloc[-1]
+        sma50 = df["Close"].rolling(50).mean().iloc[-1]
+        rsi = df["RSI"].iloc[-1]
+
+        signal = "HOLD"
+
+        score = 50
+
+        if current > sma50:
+            score += 20
+
+        if rsi < 70:
+            score += 15
+
+        if rsi > 40:
+            score += 15
+
+        if current > sma50 and rsi < 70:
+            signal = "BUY"
+
+        elif current < sma50 and rsi > 30:
+            signal = "AVOID"
+
+        signals.append({
+    "Stock": symbol,
+    "Price": round(current, 2),
+    "RSI": round(rsi, 1),
+    "Signal": signal,
+    "Score": score
+})
+
+    except:
+        pass
+
+if signals:
+
+    watchlist_table = pd.DataFrame(signals)
+
+    watchlist_table = watchlist_table.sort_values(
+        by="Score",
+        ascending=False
+    )
+
+    # --------------------------------
+# WATCHLIST BATTLE ROYALE
+# --------------------------------
+
+if len(watchlist_table) >= 3:
+
+    top1 = watchlist_table.iloc[0]
+    top2 = watchlist_table.iloc[1]
+    top3 = watchlist_table.iloc[2]
+
+    st.sidebar.markdown("### 🏆 Watchlist Battle Royale")
+
+    st.sidebar.success(
+        f"🥇 #1 {top1['Stock']} | Score: {top1['Score']}"
+    )
+
+    st.sidebar.info(
+        f"🥈 #2 {top2['Stock']} | Score: {top2['Score']}"
+    )
+
+    st.sidebar.warning(
+        f"🥉 #3 {top3['Stock']} | Score: {top3['Score']}"
+    )
+
+    st.sidebar.caption(
+        "AI ranked opportunities from your watchlist."
+    )
+
+    st.sidebar.dataframe(
+        watchlist_table,
+        use_container_width=True
+    )
+
+    top_pick = watchlist_table.iloc[0]
+
+    oversold_stocks = watchlist_table[watchlist_table["RSI"] < 40]
+
+st.sidebar.markdown("### 🚨 Oversold Alerts")
+
+if not oversold_stocks.empty:
+    for _, row in oversold_stocks.iterrows():
+        st.sidebar.warning(
+            f"🚨 {row['Stock']} oversold zone me hai | RSI: {row['RSI']}"
+        )
+else:
+    st.sidebar.info("Abhi koi oversold opportunity nahi mili.")
+
+st.sidebar.markdown("### 🏆 Top Watchlist Pick")
+
+if top_pick["Score"] >= 80:
+    st.sidebar.success(
+        f"🟢 {top_pick['Stock']} strongest opportunity hai | Score: {top_pick['Score']}"
+    )
+elif top_pick["Score"] >= 60:
+    st.sidebar.info(
+        f"🟡 {top_pick['Stock']} decent watchlist pick hai | Score: {top_pick['Score']}"
+    )
+else:
+    st.sidebar.warning(
+        f"⚠️ Abhi strong opportunity nahi hai | Best: {top_pick['Stock']} | Score: {top_pick['Score']}"
+    )
+
+# -----------------------------------
+# AI PORTFOLIO ADVISOR
+# -----------------------------------
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 🧠 AI Portfolio Advisor")
+
+try:
+    if "portfolio_df" in locals() and not portfolio_df.empty:
+        best_stock = portfolio_df.sort_values("P/L %", ascending=False).iloc[0]
+        worst_stock = portfolio_df.sort_values("P/L %", ascending=True).iloc[0]
+
+        st.sidebar.success(
+            f"🏆 Best: {best_stock['Stock']} ({best_stock['P/L %']}%)"
+        )
+
+        st.sidebar.error(
+            f"⚠️ Weak: {worst_stock['Stock']} ({worst_stock['P/L %']}%)"
+        )
+
+        # Portfolio Health Score
+
+        health_score = 0
+
+        if len(portfolio_df) >= 3:
+            health_score += 30
+
+        if worst_stock["P/L %"] > -10:
+            health_score += 30
+
+        if best_stock["P/L %"] > 0:
+            health_score += 40
+
+        st.sidebar.markdown("### ❤️ Portfolio Health")
+
+        if health_score >= 80:
+            st.sidebar.success(f"{health_score}/100 Excellent")
+        elif health_score >= 60:
+            st.sidebar.info(f"{health_score}/100 Good")
+        elif health_score >= 40:
+            st.sidebar.warning(f"{health_score}/100 Average")
+        else:
+            st.sidebar.error(f"{health_score}/100 Weak")
+
+        if len(portfolio_df) < 3:
+            st.sidebar.warning("Diversification low hai. 3-5 stocks rakho.")
+        else:
+            st.sidebar.info("Portfolio diversification decent hai.")
+
+        if worst_stock["P/L %"] < -10:
+            st.sidebar.warning(
+                f"{worst_stock['Stock']} me loss high hai. Review karo."
+            )
+
+        if best_stock["P/L %"] > 10:
+            st.sidebar.success(
+                f"{best_stock['Stock']} strong performer hai. Hold/Trail SL."
+            )
+
+            # Portfolio Rebalancing Advisor
+        st.sidebar.markdown("### ⚖️ Rebalancing Advisor")
+
+        if worst_stock["P/L %"] < -10:
+            st.sidebar.warning(
+                f"📉 Reduce: {worst_stock['Stock']} exposure by 10-15%"
+            )
+
+        if best_stock["P/L %"] > 0:
+            st.sidebar.success(
+                f"📈 Increase/Hold: {best_stock['Stock']} strong hai"
+            )
+
+        if len(portfolio_df) < 5:
+            st.sidebar.info(
+                "🏦 Add 1-2 new sectors: Banking, FMCG, Auto ya Pharma"
+            )
+
+        st.sidebar.caption("Goal: loss control + diversification improve karna.")
+
+    else:
+        st.sidebar.info("Portfolio advisor ke liye stocks add karo.")
+
+except Exception as e:
+    st.sidebar.error(f"Advisor Error: {e}")
+
+    # -----------------------------------
+# MARKET MOOD INDEX
+# -----------------------------------
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 📊 Market Mood Index")
+
+try:
+    nifty = yf.Ticker("^NSEI").history(period="5d")
+
+    if not nifty.empty:
+        nifty_change = (
+            (nifty["Close"].iloc[-1] - nifty["Close"].iloc[-2])
+            / nifty["Close"].iloc[-2]
+        ) * 100
+
+        if nifty_change > 0.5:
+            st.sidebar.success(f"🟢 Bullish Market | NIFTY: {nifty_change:.2f}%")
+        elif nifty_change < -0.5:
+            st.sidebar.error(f"🔴 Bearish Market | NIFTY: {nifty_change:.2f}%")
+        else:
+            st.sidebar.warning(f"🟡 Sideways Market | NIFTY: {nifty_change:.2f}%")
+
+except Exception as e:
+    st.sidebar.info("Market mood data unavailable.")
+
+    # -----------------------------------
+# EXPORT REPORT
+# -----------------------------------
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 📄 Export Report")
+
+report = f"""
+BHARATFINAI REPORT
+
+Portfolio Health Score : {health_score}/100
+
+Best Stock : {best_stock['Stock']}
+Worst Stock : {worst_stock['Stock']}
+
+Diversification Status :
+{"Good" if len(portfolio_df)>=3 else "Low"}
+
+Generated by BharatFinAI
+"""
+
+st.sidebar.download_button(
+    label="📥 Download Report",
+    data=report,
+    file_name="bharatfinai_report.txt",
+    mime="text/plain"
+)
