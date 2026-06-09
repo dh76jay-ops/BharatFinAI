@@ -15,6 +15,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import heapq
 import os
+from newsapi import NewsApiClient
 
 try:
     from dotenv import load_dotenv
@@ -29,16 +30,19 @@ except:
 st.set_page_config(
     page_title="BharatFinAI",
     page_icon="📈",
-    layout="wide"
+    layout="wide",
+
+initial_sidebar_state="expanded"
 )
 
-st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
+#st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 
 # ─────────────────────────────────────────
 # SIDEBAR
 # ─────────────────────────────────────────
 with st.sidebar:
+    st.success("SIDEBAR TEST")
     st.markdown("## 📈 BharatFinAI")
     st.markdown("*Hindi AI Stock Analyzer*")
     st.divider()
@@ -193,32 +197,103 @@ for _, row in df_port.iterrows():
     )
 
     st.sidebar.metric(
+    "Profit / Loss",
+    f"₹{profit_loss:,.2f}",
+    f"{return_pct:.2f}%"
+)
+
+# Portfolio Health Score
+stock_count = len(df_port)
+diversification_score = min(stock_count * 20, 100)
+
+profit_score = 100 if return_pct > 10 else 75 if return_pct > 0 else 50 if return_pct > -10 else 25
+
+health_score = int((diversification_score * 0.4) + (profit_score * 0.6))
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 🧠 Portfolio Health Score")
+
+st.sidebar.metric(
+    "Health Score",
+    f"{health_score}/100"
+)
+
+st.sidebar.progress(health_score / 100)
+
+if health_score >= 75:
+    st.sidebar.success("Strong Portfolio ✅")
+elif health_score >= 50:
+    st.sidebar.warning("Average Portfolio ⚠️")
+else:
+    st.sidebar.error("Weak Portfolio 🚨")
+
+st.sidebar.caption(
+    f"Stocks: {stock_count} | Diversification Score: {diversification_score}/100"
+)
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("### ⚠️ Risk Meter")
+
+if diversification_score < 40:
+    risk_level = "HIGH RISK 🔴"
+elif diversification_score < 70:
+    risk_level = "MEDIUM RISK 🟡"
+else:
+    risk_level = "LOW RISK 🟢"
+
+st.sidebar.metric("Risk Level", risk_level)
+
+# AI Portfolio Suggestion
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 🤖 AI Portfolio Suggestion")
+
+if stock_count == 1:
+    st.sidebar.warning("Only 1 stock hai. Diversification low hai.")
+    st.sidebar.info("Suggestion: 3-5 alag sector ke stocks add karo.")
+
+elif stock_count < 4:
+    st.sidebar.warning("Portfolio thoda concentrated hai.")
+    st.sidebar.info("Suggestion: Banking, IT, FMCG, Auto jaise sectors mix karo.")
+
+else:
+    st.sidebar.success("Diversification better lag rahi hai.")
+
+if return_pct < -10:
+    st.sidebar.error("Portfolio loss high hai. Risk review karo.")
+elif return_pct < 0:
+    st.sidebar.warning("Portfolio negative hai. Panic sell mat karo, analysis check karo.")
+elif return_pct > 10:
+    st.sidebar.success("Portfolio profitable hai. Partial profit booking consider kar sakte ho.")
+else:
+    st.sidebar.info("Portfolio stable zone me hai.")
+
+st.sidebar.metric(
         "Profit / Loss",
         f"₹{profit_loss:,.2f}",
         f"{return_pct:.2f}%"
     )
-    # Portfolio Allocation Chart
+#     # Portfolio Allocation Chart
 
-    fig_pie = go.Figure(
-        data=[
-            go.Pie(
-                labels=df_port["Symbol"],
-                values=df_port["Quantity"] * df_port["BuyPrice"],
-                hole=0.45
-            )
-        ]
-    )
+# fig_pie = go.Figure(
+#     data=[
+#         go.Pie(
+#             labels=df_port["Symbol"],
+#             values=df_port["Quantity"] * df_port["BuyPrice"],
+#             hole=0.45
+#         )
+#     ]
+# )
 
-    fig_pie.update_layout(
-        title="Portfolio Allocation",
-        height=300,
-        template="plotly_dark"
-    )
+# fig_pie.update_layout(
+#     title="Portfolio Allocation",
+#     height=300,
+#     template="plotly_dark"
+# )
 
 
             
-else:
-    st.sidebar.info("No stocks added")
+#else:
+ #   st.sidebar.info("No stocks added")
 
 new_stock = st.sidebar.text_input("Add Stock Symbol", key="watchlist_stock_input")
 
@@ -332,20 +407,41 @@ with tab3:
  
 def get_news_sentiment(stock):
 
-    text = f"{stock} growth profit strong outlook"
+    try:
+        newsapi = NewsApiClient(api_key=os.getenv("NEWS_API_KEY"))
 
-    polarity = TextBlob(text).sentiment.polarity
+        news = newsapi.get_everything(
+            q=stock,
+            language="en",
+            sort_by="publishedAt",
+            page_size=10
+        )
 
-    if polarity > 0.2:
-        return "Positive", 10
+        headlines = [
+            article["title"]
+            for article in news["articles"]
+            if article.get("title")
+        ]
 
-    elif polarity < -0.2:
-        return "Negative", -10
+        if not headlines:
+            return "Neutral", 0
 
-    else:
+        total = 0
+
+        for headline in headlines:
+            total += TextBlob(headline).sentiment.polarity
+
+        avg = total / len(headlines)
+
+        if avg > 0.1:
+            return "Positive", 10
+        elif avg < -0.1:
+            return "Negative", -10
+        else:
+            return "Neutral", 0
+
+    except:
         return "Neutral", 0
- 
-
  
 
 
@@ -395,7 +491,61 @@ with tab1:
             rsi_val = latest['RSI']
             company = info.get('longName', sym) if info else sym
 
+            # AI Buy / Hold / Sell Signal
+            signal_score = 0
+
+            if rsi_val < 35:
+                signal_score += 2
+            elif rsi_val < 60:
+                signal_score += 1
+
+            if latest["MACD"] > latest["MACD_Signal"]:
+                signal_score += 2
+
+            if vol_ratio > 1.2:
+                signal_score += 1
+
+            if week52_pos < 40:
+                signal_score += 1
+
+            if signal_score >= 5:
+                ai_signal = "BUY 🟢"
+                signal_confidence = 85
+            elif signal_score >= 3:
+                ai_signal = "HOLD 🟡"
+                signal_confidence = 65
+            else:
+                ai_signal = "AVOID / SELL 🔴"
+                signal_confidence = 45
+
+            st.markdown("### 🤖 AI Buy / Hold / Sell Signal")
+            st.metric("AI Signal", ai_signal)
+            st.progress(signal_confidence / 100)
+            st.caption(f"Confidence: {signal_confidence}% | Score: {signal_score}/6")
+
             st.markdown(f"### {company}")
+
+            st.markdown("### 🧠 AI Reasoning")
+
+            reasons = []
+
+            if rsi_val < 35:
+                reasons.append("RSI low hai, stock oversold zone me hai.")
+
+            if latest["MACD"] > latest["MACD_Signal"]:
+                reasons.append("MACD bullish crossover dikh raha hai.")
+
+            if vol_ratio > 1.2:
+                reasons.append("Volume strong hai.")
+
+            if week52_pos < 40:
+                reasons.append("52 week range ke lower zone me trade kar raha hai.")
+
+            if not reasons:
+                reasons.append("Technical indicators mixed signals de rahe hain.")
+
+            for r in reasons:
+                st.info(r)
 
             # Metrics
             m1, m2, m3, m4, m5 = st.columns(5)
@@ -409,6 +559,17 @@ with tab1:
             m5.metric("📈 MACD",
                       "Bullish ✅" if latest['MACD'] > latest['MACD_Signal'] else "Bearish ⚠️",
                       f"{latest['MACD']:.2f}")
+            
+            current_price = latest["Close"]
+            
+            target_price = round(current_price * 1.10, 2)
+            upside = round(((target_price-current_price)/current_price)*100,2)
+
+            st.metric(
+                "🎯 AI Target Price",
+                f"₹{target_price}",
+                f"{upside}% Upside"
+            )
 
             # Chart
             fig = make_subplots(rows=3, cols=1, shared_xaxes=True,

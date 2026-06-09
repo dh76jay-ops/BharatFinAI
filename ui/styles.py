@@ -6,7 +6,7 @@ CUSTOM_CSS = """
     color: #f0f0ff;
 }
 
-#MainMenu, footer, header {
+#MainMenu, footer {
     visibility: hidden;
 }
 
@@ -26,6 +26,19 @@ CUSTOM_CSS = """
 
 .stDataFrame {
     background: #0c0c14 !important;
+}
+
+[data-testid="stSidebar"] {
+    display: block !important;
+    visibility: visible !important;
+    min-width: 320px !important;
+    max-width: 320px !important;
+    width: 320px !important;
+}
+
+[data-testid="collapsedControl"] {
+    display: block !important;
+    visibility: visible !important;
 }
 
 </style>
