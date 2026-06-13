@@ -1695,8 +1695,10 @@ with tab5:
         else:
 
             returns = df["Close"].pct_change().dropna()
-            daily_vol = returns.std()
-            annual_vol = daily_vol * np.sqrt(252)
+
+            # Volatility Modeling
+        daily_vol = returns.std()
+        annual_vol = daily_vol * np.sqrt(252)
 
         if annual_vol < 0.20:
             vol_level = "Low Volatility 🟢"
@@ -1762,8 +1764,9 @@ with tab5:
 
             with tab8:
 
-            st.markdown("## 📊 Portfolio Optimizer")
-            st.subheader("🤖 AI Portfolio Advisor")
+                st.markdown("## 📊 Portfolio Optimizer")
+
+                st.subheader("🤖 AI Portfolio Advisor")
 
             investment = st.number_input(
                 "Investment Amount (₹)",
@@ -1781,6 +1784,9 @@ with tab5:
                 ["1 Year", "3 Years", "5 Years", "10 Years"]
             )
 
+            #if st.button("Generate AI Portfolio"):
+             #   pass
+
             stock_input = st.text_area(
                 "Stocks (comma separated)",
                 value="RELIANCE,TCS,HDFCBANK,INFY,SBIN"
@@ -1788,173 +1794,212 @@ with tab5:
 
             if st.button("Optimize Portfolio"):
 
+
                 import numpy as np
 
-                symbols = [s.strip().upper() for s in stock_input.split(",")]
+            symbols = [s.strip().upper() for s in stock_input.split(",")]
 
-                price_data = pd.DataFrame()
 
-                for sym in symbols:
-                    yf_symbol = sym if sym.endswith(".NS") else sym + ".NS"
-                    try:
-                        data = yf.Ticker(yf_symbol).history(period="1y")
-                        price_data[sym] = data["Close"]
-                    except:
-                        pass
+            price_data = pd.DataFrame()
 
-                        price_data = price_data.dropna()
+        for sym in symbols:
 
-                        if len(price_data.columns) < 2:
-                            st.error("Kam se kam 2 valid stocks chahiye")
-                        else:
-                            returns = price_data.pct_change().dropna()
-                            mean_returns = returns.mean() * 252
-                            cov_matrix = returns.cov() * 252
+            yf_symbol = sym if sym.endswith(".NS") else sym + ".NS"
 
-                            n = len(price_data.columns)
+            try:
+                data = yf.Ticker(yf_symbol).history(period="1y")
+                price_data[sym] = data["Close"]
+            except:
+                pass
 
-                            portfolio_returns = []
-                            portfolio_risks = []
-                            portfolio_sharpes = []
+        price_data = price_data.dropna()
 
-                            best_sharpe = -999
-                            best_weights = None
+        if len(price_data.columns) < 2:
+            st.error("Kam se kam 2 valid stocks chahiye")
+        else:
 
-                            for _ in range(5000):
-                                weights = np.random.random(n)
-                                weights /= np.sum(weights)
+            returns = price_data.pct_change().dropna()
 
-                                portfolio_return = np.sum(mean_returns * weights)
-                                portfolio_risk = np.sqrt(
-                                    np.dot(weights.T, np.dot(cov_matrix, weights))
-                                )
-                                sharpe = portfolio_return / portfolio_risk
+            mean_returns = returns.mean() * 252
+            cov_matrix = returns.cov() * 252
 
-                                portfolio_returns.append(portfolio_return)
-                                portfolio_risks.append(portfolio_risk)
-                                portfolio_sharpes.append(sharpe)
+            n = len(price_data.columns)
 
-                                if sharpe > best_sharpe:
-                                    best_sharpe = sharpe
-                                    best_weights = weights
+            portfolio_returns = []
+            portfolio_risks = []
+            portfolio_sharpes = []
 
-                            # Efficient Frontier
-                            frontier_df = pd.DataFrame({
-                                "Risk": portfolio_risks,
-                                "Return": portfolio_returns,
-                                "Sharpe": portfolio_sharpes
-                            })
+            best_sharpe = -999
+            best_weights = None
 
-                            fig_frontier = go.Figure()
+            for _ in range(5000):
 
-                            fig_frontier.add_trace(
-                                go.Scatter(
-                                    x=frontier_df["Risk"],
-                                    y=frontier_df["Return"],
-                                    mode="markers",
-                                    marker=dict(
-                                        size=5,
-                                        color=frontier_df["Sharpe"],
-                                        colorscale="Viridis",
-                                        showscale=True
-                                    ),
-                                    name="Portfolios"
-                                )
-                            )
+                weights = np.random.random(n)
+                weights /= np.sum(weights)
 
-                            fig_frontier.add_trace(
-                                go.Scatter(
-                                    x=[max(portfolio_risks)],
-                                    y=[max(portfolio_returns)],
-                                    mode="markers",
-                                    marker=dict(size=14, color="red"),
-                                    name="Max Return"
-                                )
-                            )
+                portfolio_return = np.sum(mean_returns * weights)
 
-                            fig_frontier.update_layout(
-                                template="plotly_dark",
-                                title="Efficient Frontier",
-                                xaxis_title="Risk",
-                                yaxis_title="Return"
-                            )
+                portfolio_risk = np.sqrt(
+                    np.dot(weights.T,
+                           np.dot(cov_matrix, weights))
+                )
 
-                            st.plotly_chart(fig_frontier, use_container_width=True)
+                sharpe = portfolio_return / portfolio_risk
 
-                            result_df = pd.DataFrame({
-                                "Stock": price_data.columns,
-                                "Allocation %": np.round(best_weights * 100, 2)
-                            })
+                portfolio_returns.append(portfolio_return)
 
-                            st.dataframe(result_df)
+                portfolio_risks.append(portfolio_risk)
 
-                            exp_return = np.sum(mean_returns * best_weights) * 100
-                            exp_risk = np.sqrt(
-                                np.dot(best_weights.T, np.dot(cov_matrix, best_weights))
-                            ) * 100
+                portfolio_sharpes.append(sharpe)
 
-                            c1, c2, c3 = st.columns(3)
-                            c1.metric("Expected Return", f"{exp_return:.2f}%")
-                            c2.metric("Portfolio Risk", f"{exp_risk:.2f}%")
-                            c3.metric("Sharpe Ratio", f"{best_sharpe:.2f}")
+                if sharpe > best_sharpe:
+                    best_sharpe = sharpe
+                    best_weights = weights
 
-                            st.success("🏆 Maximum Sharpe Ratio Portfolio Found")
+            # Efficient Frontier
 
-                            st.subheader("🏆 Portfolio Health Score")
+            frontier_df = pd.DataFrame({
+                "Risk": portfolio_risks,
+                "Return": portfolio_returns,
+                "Sharpe": portfolio_sharpes
+            })
 
-                            score = 0
-                            if best_sharpe > 1:
-                                score += 20
-                            elif best_sharpe > 0.5:
-                                score += 15
-                            else:
-                                score += 8
+            fig_frontier = go.Figure()
 
-                            if exp_risk < 15:
-                                score += 30
-                            elif exp_risk < 20:
-                                score += 22
-                            else:
-                                score += 12
+            fig_frontier.add_trace(
+                go.Scatter(
+                    x=frontier_df["Risk"],
+                    y=frontier_df["Return"],
+                    mode="markers",
+                    marker=dict(
+                        size=5,
+                        color=frontier_df["Sharpe"],
+                        colorscale="Viridis",
+                        showscale=True
+                    ),
+                    name="Portfolios"
+                )
+            )
 
-                            if exp_return > 15:
-                                score += 20
-                            elif exp_return > 10:
-                                score += 15
-                            else:
-                                score += 10
+            fig_frontier.add_trace(
+                go.Scatter(
+                    x=[max(portfolio_risks)],
+                    y=[max(portfolio_returns)],
+                    mode="markers",
+                    marker=dict(size=14, color="red"),
+                    name="Max Return"
+                )
+            )
 
-                            if len(symbols) >= 5:
-                                score += 25
-                            else:
-                                score += 15
+            fig_frontier.update_layout(
+                template="plotly_dark",
+                title="Efficient Frontier",
+                xaxis_title="Risk",
+                yaxis_title="Return"
+            )
 
-                            st.metric("Health Score", f"{score}/100")
+            st.plotly_chart(fig_frontier, use_container_width=True)
 
-                            if score >= 80:
-                                st.success("🚀 Excellent Portfolio")
-                            elif score >= 60:
-                                st.info("📈 Good Portfolio")
-                            elif score >= 40:
-                                st.warning("⚠️ Average Portfolio")
-                            else:
-                                st.error("❌ Weak Portfolio")
+            result_df = pd.DataFrame({
+                "Stock": price_data.columns,
+                "Allocation %":
+                    np.round(best_weights * 100, 2)
+            })
 
-                            st.subheader("🤖 AI Portfolio Advisor")
+            st.dataframe(result_df)
 
-                            if best_sharpe > 1:
-                                st.success("Excellent risk-adjusted portfolio.")
-                            elif best_sharpe > 0.5:
-                                largest_stock = result_df.loc[
-                                    result_df["Allocation %"].idxmax()
-                                ]
-                                st.info(
-                                    f"""
-                                📊 Highest Allocation: {largest_stock['Stock']} ({largest_stock['Allocation %']:.2f}%)
-                                📈 Expected Return: {exp_return:.2f}%
-                                ⚠️ Portfolio Risk: {exp_risk:.2f}%
-                                🎯 Sharpe Ratio: {best_sharpe:.2f}
-                                    """
-                                )
-                            else:
-                                st.warning("Portfolio risk jyada hai compared to expected return.")          
+            exp_return = np.sum(
+                mean_returns * best_weights
+            ) * 100
+
+            exp_risk = np.sqrt(
+                np.dot(best_weights.T,
+                       np.dot(cov_matrix,
+                              best_weights))
+            ) * 100
+
+            c1, c2, c3 = st.columns(3)
+
+            c1.metric(
+                "Expected Return",
+                f"{exp_return:.2f}%"
+            )
+
+            c2.metric(
+                "Portfolio Risk",
+                f"{exp_risk:.2f}%"
+            )
+
+            c3.metric(
+                "Sharpe Ratio",
+                f"{best_sharpe:.2f}"
+            )
+
+            st.success(
+                "🏆 Maximum Sharpe Ratio Portfolio Found"
+            )
+
+            st.subheader("🏆 Portfolio Health Score")
+
+            score = 0
+
+            if best_sharpe > 1:
+                score += 20
+            elif best_sharpe > 0.5:
+                score += 15
+            else:
+                score += 8
+
+            if exp_risk < 15:
+                score += 30
+            elif exp_risk < 20:
+                score += 22
+            else:
+                score += 12
+
+            if exp_return > 15:
+                score += 20
+            elif exp_return > 10:
+                score += 15
+            else:
+                score += 10
+
+            if len(symbols) >= 5:
+                score += 25
+            else:
+                score += 15
+
+            st.metric("Health Score", f"{score}/100")
+
+            if score >= 80:
+                st.success("🚀 Excellent Portfolio")
+            elif score >= 60:
+                st.info("📈 Good Portfolio")
+            elif score >= 40:
+                st.warning("⚠️ Average Portfolio")
+            else:
+                st.error("❌ Weak Portfolio")
+
+            st.subheader("🤖 AI Portfolio Advisor")
+
+            if best_sharpe > 1:
+                st.success("Excellent risk-adjusted portfolio.")
+            elif best_sharpe > 0.5:
+                largest_stock = result_df.loc[
+                    result_df["Allocation %"].idxmax()
+                ]
+
+                st.info(
+                    f"""
+                📊 Highest Allocation: {largest_stock['Stock']} ({largest_stock['Allocation %']:.2f}%)
+
+                📈 Expected Return: {exp_return:.2f}%
+
+                ⚠️ Portfolio Risk: {exp_risk:.2f}%
+
+                🎯 Sharpe Ratio: {best_sharpe:.2f}
+                """
+                )
+            else:
+                st.warning("Portfolio risk jyada hai compared to expected return.")
+
