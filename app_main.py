@@ -210,6 +210,8 @@ for _, row in df_port.iterrows():
 stock_count = len(df_port)
 diversification_score = min(stock_count * 20, 100)
 
+return_pct = float(return_pct) if "return_pct" in locals() else 0
+
 profit_score = 100 if return_pct > 10 else 75 if return_pct > 0 else 50 if return_pct > -10 else 25
 
 health_score = int((diversification_score * 0.4) + (profit_score * 0.6))
