@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 from textblob import TextBlob
 import pandas as pd
 import numpy as np
-import pandas_ta as ta
+#import pandas_ta as ta
 from groq import Groq
 import plotly.graph_objects as go
 import plotly.express as px
