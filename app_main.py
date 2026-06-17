@@ -1378,7 +1378,7 @@ BHARATFINAI REPORT
 Portfolio Health Score : {health_score}/100
 
 if "best_stock" not in locals():
-    best_stock = {"Stock": "N/A", "P/L %": 0}
+best_stock = {"Stock": "N/A", "P/L %": 0}
 
 Best Stock : {best_stock['Stock']}
 Worst Stock : {worst_stock['Stock']}
