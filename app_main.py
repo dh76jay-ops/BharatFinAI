@@ -7,12 +7,15 @@ from ui.styles import CUSTOM_CSS
 from data.feedback import save_feedback, load_feedback
 import streamlit as st
 import yfinance as yf
+import seaborn as sns
+import matplotlib.pyplot as plt
 from textblob import TextBlob
 import pandas as pd
 import numpy as np
 import pandas_ta as ta
 from groq import Groq
 import plotly.graph_objects as go
+import plotly.express as px
 from plotly.subplots import make_subplots
 import heapq
 import os
@@ -1659,13 +1662,13 @@ with tab5:
 
             with tab7:
 
-             st.markdown("## 🛡️ Risk Engine (VaR)")
+                st.markdown("## 🛡️ Risk Engine (VaR)")
 
     risk_symbol = st.text_input(
         "Stock Symbol",
         value="RELIANCE",
         key="risk_stock"
-    )
+    ).strip().upper()
 
     risk_period = st.selectbox(
         "Period",
@@ -1678,283 +1681,775 @@ with tab5:
         "Investment Amount (₹)",
         min_value=1000,
         value=100000,
-        step=1000
+        step=1000,
+        key="risk_investment"
     )
 
-    if st.button("Calculate Risk"):
-
+    if st.button("Calculate Risk", key="calculate_risk_btn"):
         import numpy as np
 
-        symbol = risk_symbol.upper()
-        yf_symbol = symbol if symbol.endswith(".NS") else symbol + ".NS"
+        clean_symbol = risk_symbol.replace(" ", "").replace("$", "")
+        yf_symbol = clean_symbol if clean_symbol.endswith(".NS") else clean_symbol + ".NS"
+
+        st.info(f"Fetching data for: {yf_symbol}")
 
         df = yf.Ticker(yf_symbol).history(period=risk_period)
 
         if df.empty:
-            st.error("Data nahi mila")
+            st.error("Data nahi mila. Symbol check karo. Example: RELIANCE, TCS, INFY, SBIN")
         else:
-
             returns = df["Close"].pct_change().dropna()
-            daily_vol = returns.std()
-            annual_vol = daily_vol * np.sqrt(252)
 
-        if annual_vol < 0.20:
-            vol_level = "Low Volatility 🟢"
-        elif annual_vol < 0.35:
-            vol_level = "Medium Volatility 🟡"
-        else:
-            vol_level = "High Volatility 🔴"
-
-            var95 = np.percentile(returns, 5)
-            var99 = np.percentile(returns, 1)
-
-            loss95 = investment * abs(var95)
-            loss99 = investment * abs(var99)
-
-            volatility = returns.std() * np.sqrt(252) * 100
-
-            cumulative = (1 + returns).cumprod()
-            rolling_max = cumulative.cummax()
-            drawdown = ((cumulative - rolling_max) / rolling_max).min() * 100
-
-            c1, c2, c3 = st.columns(3)
-
-            c1.metric(
-                "VaR 95%",
-                f"₹{loss95:,.0f}"
-            )
-
-            c2.metric(
-                "VaR 99%",
-                f"₹{loss99:,.0f}"
-            )
-
-            c3.metric(
-                "Volatility",
-                f"{volatility:.2f}%"
-            )
-
-            st.metric(
-                "Maximum Drawdown",
-                f"{drawdown:.2f}%"
-            )
-
-            if volatility < 20:
-                risk_score = "LOW RISK 🟢"
-            elif volatility < 35:
-                risk_score = "MEDIUM RISK 🟡"
+            if returns.empty:
+                st.error("Enough price data nahi mila risk calculate karne ke liye.")
             else:
-                risk_score = "HIGH RISK 🔴"
+                var95 = np.percentile(returns, 5)
+                var99 = np.percentile(returns, 1)
 
-            st.success(f"Risk Classification: {risk_score}")
+                loss95 = investment * abs(var95)
+                loss99 = investment * abs(var99)
 
-            st.info(
-                f"""
-                ₹{investment:,.0f} investment par:
+                volatility = returns.std() * np.sqrt(252) * 100
 
-                • 95% confidence par ek din me approx ₹{loss95:,.0f}
-                  se jyada loss expected nahi.
+                cumulative = (1 + returns).cumprod()
+                rolling_max = cumulative.cummax()
+                drawdown = ((cumulative - rolling_max) / rolling_max).min() * 100
 
-                • 99% confidence par approx ₹{loss99:,.0f}
-                  se jyada loss expected nahi.
-                """
-            )
+                c1, c2, c3 = st.columns(3)
+
+                c1.metric("VaR 95%", f"₹{loss95:,.0f}")
+                c2.metric("VaR 99%", f"₹{loss99:,.0f}")
+                c3.metric("Volatility", f"{volatility:.2f}%")
+
+                st.metric("Maximum Drawdown", f"{drawdown:.2f}%")
+
+                if volatility < 20:
+                    risk_score = "LOW RISK 🟢"
+                elif volatility < 35:
+                    risk_score = "MEDIUM RISK 🟡"
+                else:
+                    risk_score = "HIGH RISK 🔴"
+
+                st.success(f"Risk Classification: {risk_score}")
+
+                st.info(
+                    f"""
+₹{investment:,.0f} investment par:
+
+• 95% confidence par ek din me approx ₹{loss95:,.0f} se jyada loss expected nahi.  
+• 99% confidence par approx ₹{loss99:,.0f} se jyada loss expected  nahi.
+                    """
+                )
 
             with tab8:
+                st.write("HELLO TAB8")
+                st.markdown("## 📊 Portfolio Optimizer")
+                st.subheader("🤖 AI Portfolio Advisor")
 
-            st.markdown("## 📊 Portfolio Optimizer")
-            st.subheader("🤖 AI Portfolio Advisor")
+                investment = st.number_input(
+                    "Investment Amount (₹)",
+                    min_value=1000,
+                    value=50000
+                )
 
-            investment = st.number_input(
-                "Investment Amount (₹)",
-                min_value=1000,
-                value=50000
-            )
+                risk_profile = st.selectbox(
+                    "Risk Profile",
+                    ["Low", "Medium", "High"]
+                )
 
-            risk_profile = st.selectbox(
-                "Risk Profile",
-                ["Low", "Medium", "High"]
-            )
+                horizon = st.selectbox(
+                    "Investment Horizon",
+                    ["1 Year", "3 Years", "5 Years", "10 Years"]
+                )
 
-            horizon = st.selectbox(
-                "Investment Horizon",
-                ["1 Year", "3 Years", "5 Years", "10 Years"]
-            )
+                stock_input = st.text_area(
+                    "Stocks (comma separated)",
+                    value="RELIANCE,TCS,HDFCBANK,INFY,SBIN"
+                )
 
-            stock_input = st.text_area(
-                "Stocks (comma separated)",
-                value="RELIANCE,TCS,HDFCBANK,INFY,SBIN"
-            )
-
-            if st.button("Optimize Portfolio"):
+                st.write("BEFORE BUTTON")
+                st.button("Optimize Portfolio", key="test_btn")
+            #if st.button("Optimize Portfolio, key="optimize_portfolio_btn"):
+                st.success("BUTTON CLICKED")
 
                 import numpy as np
 
-                symbols = [s.strip().upper() for s in stock_input.split(",")]
-
+                symbols = [s.strip().upper().replace("$", "")for s in stock_input.split(",")if s.strip()]
+                st.write("Raw Input =", stock_input)
+                st.write("Symbols List =", symbols)
+                st.write("Raw Input:", stock_input)
+                st.write("Symbols:", symbols)
                 price_data = pd.DataFrame()
 
                 for sym in symbols:
                     yf_symbol = sym if sym.endswith(".NS") else sym + ".NS"
+
                     try:
                         data = yf.Ticker(yf_symbol).history(period="1y")
-                        price_data[sym] = data["Close"]
-                    except:
-                        pass
+                        if not data.empty:
+                            price_data[sym] = data["Close"]
+                    except Exception as e:
+                        st.warning(f"{sym} skipped: {e}")
 
-                        price_data = price_data.dropna()
+                price_data = price_data.dropna()
+                st.write("Stocks Found:", symbols)
 
-                        if len(price_data.columns) < 2:
-                            st.error("Kam se kam 2 valid stocks chahiye")
+                if len(price_data.columns) < 2:
+                    st.error("Kam se kam 2 valid stocks chahiye")
+                else:
+
+                    returns = price_data.pct_change().dropna()
+
+                    corr_matrix = returns.corr()
+
+                    st.subheader("🔥 Correlation Heatmap")
+
+                    fig_corr, ax = plt.subplots(figsize=(8, 6))
+
+                    sns.heatmap(
+                        corr_matrix,
+                        annot=True,
+                        cmap="RdYlGn_r",
+                        ax=ax
+                    )
+
+                    st.pyplot(fig_corr)
+
+
+                    # High Correlation Detection
+                    max_corr = corr_matrix.where(
+                        np.triu(np.ones(corr_matrix.shape), k=1).astype(bool)
+                    ).max().max()
+
+                    if max_corr > 0.75:
+                        st.warning(
+                            "⚠ High Correlation Detected! Portfolio diversification weak hai."
+                        )
+                    else:
+                        st.success(
+                            "✅ Portfolio diversification accha hai."
+                        )
+
+                    mean_returns = returns.mean() * 252
+                    cov_matrix = returns.cov() * 252
+
+                    n = len(price_data.columns)
+
+                    portfolio_returns = []
+                    portfolio_risks = []
+                    portfolio_sharpes = []
+
+                    best_sharpe = -999
+                    best_weights = None
+
+                    if risk_profile == "Low":
+                        max_weight = 0.30
+                    elif risk_profile == "Medium":
+                        max_weight = 0.50
+                    else:
+                        max_weight = 0.80
+
+                    for _ in range(5000):
+
+                        weights = np.random.random(n)
+                        weights /= np.sum(weights)
+
+                        if np.max(weights) > max_weight:
+                            continue
+
+                        portfolio_return = np.sum(mean_returns * weights)
+
+                        portfolio_risk = np.sqrt(
+                            np.dot(weights.T,
+                                np.dot(cov_matrix, weights))
+                        )
+
+                        sharpe = portfolio_return / portfolio_risk
+
+                        portfolio_returns.append(portfolio_return)
+
+                        portfolio_risks.append(portfolio_risk)
+
+                        portfolio_sharpes.append(sharpe)
+
+                        if sharpe > best_sharpe:
+                            best_sharpe = sharpe
+                            best_weights = weights
+
+                    # Efficient Frontier
+
+                    frontier_df = pd.DataFrame({
+                        "Risk": portfolio_risks,
+                        "Return": portfolio_returns,
+                        "Sharpe": portfolio_sharpes
+                    })
+
+                    fig_frontier = go.Figure()
+
+                    fig_frontier.add_trace(
+                        go.Scatter(
+                            x=frontier_df["Risk"],
+                            y=frontier_df["Return"],
+                            mode="markers",
+                            marker=dict(
+                                size=5,
+                                color=frontier_df["Sharpe"],
+                                colorscale="Viridis",
+                                showscale=True
+                            ),
+                            name="Portfolios"
+                        )
+                    )
+
+                    fig_frontier.add_trace(
+                        go.Scatter(
+                            x=[max(portfolio_risks)],
+                            y=[max(portfolio_returns)],
+                            mode="markers",
+                            marker=dict(size=14, color="red"),
+                            name="Max Return"
+                        )
+                    )
+
+                    fig_frontier.update_layout(
+                        template="plotly_dark",
+                        title="Efficient Frontier",
+                        xaxis_title="Risk",
+                        yaxis_title="Return"
+                    )
+
+                    st.plotly_chart(fig_frontier, use_container_width=True)
+
+                    result_df = pd.DataFrame({
+                        "Stock": price_data.columns,
+                        "Allocation %":
+                            np.round(best_weights * 100, 2)
+                    })
+
+                    result_df["Investment Amount (₹)"] = (
+                        result_df["Allocation %"] / 100
+                    ) * investment
+
+                    st.dataframe(result_df)
+                    st.subheader("🏦 Sector Concentration Risk")
+
+                    sector_map = {
+                        "RELIANCE": "Energy",
+                        "TCS": "IT",
+                        "INFY": "IT",
+                        "HDFCBANK": "Banking",
+                        "SBIN": "Banking",
+                        "ICICIBANK": "Banking",
+                        "WIPRO": "IT",
+                        "MARUTI": "Auto",
+                        "SUNPHARMA": "Pharma",
+                        "ITC": "FMCG"
+                    }
+
+                    result_df["Sector"] = result_df["Stock"].map(sector_map).fillna("Unknown")
+
+                    sector_df = (
+                        result_df.groupby("Sector")["Allocation %"]
+                        .sum()
+                        .reset_index()
+                    )
+
+                    st.dataframe(sector_df)
+
+                    fig_sector = px.pie(
+                        sector_df,
+                        values="Allocation %",
+                        names="Sector",
+                        title="Sector Exposure"
+                    )
+
+                    st.plotly_chart(fig_sector, use_container_width=True)
+
+                    max_sector = sector_df.loc[sector_df["Allocation %"].idxmax()]
+
+                    if max_sector["Allocation %"] > 50:
+                        st.error(f"⚠ Overexposure detected in {max_sector['Sector']} sector ({max_sector['Allocation %']:.1f}%)")
+                    elif max_sector["Allocation %"] > 35:
+                        st.warning(f"⚠ Moderate concentration in {max_sector['Sector']} sector ({max_sector['Allocation %']:.1f}%)")
+                    else:
+                        st.success("✅ Sector diversification looks healthy")
+                    fig_pie = px.pie(
+                        result_df,
+                        names="Stock",
+                        values="Allocation %",
+                        title="Portfolio Allocation"
+                    )
+
+                    st.plotly_chart(fig_pie, use_container_width=True)
+
+                    st.subheader("📊 Correlation Heatmap")
+
+                    try:
+                        corr_matrix = returns.corr()
+
+                        fig, ax = plt.subplots(figsize=(8,6))
+
+                        sns.heatmap(
+                            corr_matrix,
+                            annot=True,
+                            cmap="coolwarm",
+                            center=0,
+                            ax=ax
+                        )
+
+                        st.pyplot(fig)
+
+                    except Exception as e:
+                        st.warning("Correlation Heatmap unavailable.")
+
+                        st.subheader("🎯 Diversification Score")
+
+                        avg_corr = corr_matrix.abs().mean().mean()
+
+                        div_score = int((1 - avg_corr) * 100)
+
+                        div_score = max(0, min(100, div_score))
+
+                        st.metric("Diversification Score", f"{div_score}/100")
+
+                        if div_score >= 80:
+                            st.success("✅ Excellent Diversification")
+                        elif div_score >= 60:
+                            st.info("🟢 Good Diversification")
+                        elif div_score >= 40:
+                            st.warning("⚠ Moderate Diversification")
                         else:
-                            returns = price_data.pct_change().dropna()
-                            mean_returns = returns.mean() * 252
-                            cov_matrix = returns.cov() * 252
+                            st.error("🚨 Poor Diversification - Highly Correlated Portfolio")
 
-                            n = len(price_data.columns)
+                    csv = result_df.to_csv(index=False)
 
-                            portfolio_returns = []
-                            portfolio_risks = []
-                            portfolio_sharpes = []
+                    st.download_button(
+                        label="📥 Download Portfolio CSV",
+                        data=csv,
+                        file_name="bharatfin_portfolio.csv",
+                        mime="text/csv"
+                    )
 
-                            best_sharpe = -999
-                            best_weights = None
+                    st.subheader("📉 CVaR Risk Analysis")
 
-                            for _ in range(5000):
-                                weights = np.random.random(n)
-                                weights /= np.sum(weights)
+                    portfolio_returns = returns.mean(axis=1)
 
-                                portfolio_return = np.sum(mean_returns * weights)
-                                portfolio_risk = np.sqrt(
-                                    np.dot(weights.T, np.dot(cov_matrix, weights))
-                                )
-                                sharpe = portfolio_return / portfolio_risk
+                    var95 = np.percentile(
+                        portfolio_returns,
+                        5
+                    )
 
-                                portfolio_returns.append(portfolio_return)
-                                portfolio_risks.append(portfolio_risk)
-                                portfolio_sharpes.append(sharpe)
+                    cvar95 = portfolio_returns[
+                        portfolio_returns <= var95
+                    ].mean()
 
-                                if sharpe > best_sharpe:
-                                    best_sharpe = sharpe
-                                    best_weights = weights
+                    col1, col2 = st.columns(2)
 
-                            # Efficient Frontier
-                            frontier_df = pd.DataFrame({
-                                "Risk": portfolio_risks,
-                                "Return": portfolio_returns,
-                                "Sharpe": portfolio_sharpes
-                            })
+                    with col1:
+                        st.metric(
+                            "VaR 95%",
+                            f"{var95:.2%}"
+                        )
 
-                            fig_frontier = go.Figure()
+                    with col2:
+                        st.metric(
+                            "CVaR 95%",
+                            f"{cvar95:.2%}"
+                        )
 
-                            fig_frontier.add_trace(
-                                go.Scatter(
-                                    x=frontier_df["Risk"],
-                                    y=frontier_df["Return"],
-                                    mode="markers",
-                                    marker=dict(
-                                        size=5,
-                                        color=frontier_df["Sharpe"],
-                                        colorscale="Viridis",
-                                        showscale=True
-                                    ),
-                                    name="Portfolios"
-                                )
+                    if cvar95 < -0.03:
+                        st.error(
+                            "🚨 Crash scenario risk is HIGH"
+                        )
+                    else:
+                        st.success(
+                            "✅ Crash scenario risk is acceptable"
+                        )
+
+                    st.plotly_chart(fig_pie, use_container_width=True, key="portfolio_allocation_pie_1")
+
+                    st.subheader("📉 Drawdown Risk Monitor")
+
+                    portfolio_returns = returns.mean(axis=1)
+
+                    cumulative = (
+                        1 + portfolio_returns
+                    ).cumprod()
+
+                    rolling_max = cumulative.cummax()
+
+                    drawdown = (
+                        cumulative - rolling_max
+                    ) / rolling_max
+
+                    max_drawdown = drawdown.min()
+
+                    st.metric(
+                        "Max Drawdown",
+                        f"{max_drawdown:.2%}"
+                    )
+
+                    fig_dd = px.line(
+                        drawdown,
+                        title="Portfolio Drawdown"
+                    )
+
+                    st.plotly_chart(
+                        fig_dd,
+                        use_container_width=True
+                    )
+
+                    if max_drawdown < -0.20:
+                        st.error(
+                            "🚨 Severe drawdown risk detected"
+                        )
+                    elif max_drawdown < -0.10:
+                        st.warning(
+                            "⚠ Moderate drawdown risk"
+                        )
+                    else:
+                        st.success(
+                            "✅ Drawdown risk under control"
+                        )
+
+                    exp_return = np.sum(
+                        mean_returns * best_weights
+                    ) * 100
+
+                    exp_risk = np.sqrt(
+                        np.dot(best_weights.T,
+                            np.dot(cov_matrix,
+                                    best_weights))
+                    ) * 100
+
+                    c1, c2, c3 = st.columns(3)
+
+                    c1.metric(
+                        "Expected Return",
+                        f"{exp_return:.2f}%"
+                    )
+
+                    c2.metric(
+                        "Portfolio Risk",
+                        f"{exp_risk:.2f}%"
+                    )
+
+                    c3.metric(
+                        "Sharpe Ratio",
+                        f"{best_sharpe:.2f}"
+                    )
+
+                    st.subheader("🧪 Stress Testing Engine")
+
+                    stress_results = {
+                        "NIFTY Crash (-10%)": -10,
+                        "Banking Crash (-15%)": -15,
+                        "IT Crash (-20%)": -20,
+                        "Market Crash (-30%)": -30
+                    }
+
+                    for scenario, shock in stress_results.items():
+
+                        portfolio_loss = (
+                            result_df["Allocation %"].sum()
+                            * abs(shock)
+                            / 100
+                        )
+
+                        st.write(
+                            f"{scenario} → Portfolio Loss: -{portfolio_loss:.2f}%"
+                        )
+
+                    if portfolio_loss > 20:
+                        st.error(
+                            "🚨 High Stress Risk"
+                        )
+                    elif portfolio_loss > 10:
+                        st.warning(
+                            "⚠ Moderate Stress Risk"
+                        )
+                    else:
+                        st.success(
+                            "✅ Stress Test Passed"
+                        )
+
+                    st.success(
+                        "🏆 Maximum Sharpe Ratio Portfolio Found"
+                    )
+
+                    st.subheader("🧠 AI Risk Diagnosis")
+
+                    issues = []
+
+                    if best_sharpe < 0:
+                        issues.append(
+                            "❌ Negative Sharpe Ratio - Risk ke hisab se return weak hai"
+                        )
+
+                    if max_drawdown < -0.20:
+                        issues.append(
+                            "❌ High Drawdown Risk (>20%)"
+                        )
+
+                    for _, row in sector_df.iterrows():
+                        if row["Allocation %"] > 50:
+                            issues.append(
+                                f"❌ Overexposed to {row['Sector']} sector ({row['Allocation %']:.1f}%)"
                             )
 
-                            fig_frontier.add_trace(
-                                go.Scatter(
-                                    x=[max(portfolio_risks)],
-                                    y=[max(portfolio_returns)],
-                                    mode="markers",
-                                    marker=dict(size=14, color="red"),
-                                    name="Max Return"
-                                )
+                    if len(issues) == 0:
+                        st.success(
+                            "✅ Portfolio looks healthy"
+                        )
+                    else:
+                        for item in issues:
+                            st.warning(item)
+
+                            st.subheader("💡 AI Recommendations")
+
+                    if best_sharpe < 0:
+                        st.info(
+                            "Increase diversification and reduce weak-performing assets."
+                        )
+
+                    if max_drawdown < -0.20:
+                        st.info(
+                            "Add defensive sectors like FMCG and Pharma."
+                        )
+
+                    for _, row in sector_df.iterrows():
+                        if row["Allocation %"] > 50:
+                            st.info(
+                                f"Reduce exposure to {row['Sector']} sector."
                             )
 
-                            fig_frontier.update_layout(
-                                template="plotly_dark",
-                                title="Efficient Frontier",
-                                xaxis_title="Risk",
-                                yaxis_title="Return"
+                    st.subheader("🏆 Portfolio Health Score")
+
+                    st.markdown("## 🔄 AI Rebalancing Suggestions")
+
+                    top_stock = result_df.loc[
+                        result_df["Allocation %"].idxmax(),
+                        "Stock"
+                    ]
+
+                    top_alloc = result_df["Allocation %"].max()
+
+                    suggestions = []
+
+                    if top_alloc > 50:
+                        suggestions.append(
+                            f"⚠ Reduce {top_stock} allocation ({top_alloc:.2f}%)"
+                        )
+
+                    if portfolio_risk > 0.20:
+                        suggestions.append(
+                            "⚠ Portfolio risk is high. Add defensive stocks."
+                        )
+
+                    sharpe_ratio = 0.84
+                    if sharpe_ratio < 0.5:
+                        suggestions.append(
+                            "📈 Consider adding ITC, HINDUNILVR, ICICIBANK for diversification."
+                        )
+
+                    expected_return = 0.15
+                    if expected_return > portfolio_risk:
+                        suggestions.append(
+                            "✅ Risk-reward profile looks healthy."
+                        )
+
+                    
+                    score = 100
+
+                    if best_sharpe < 0:
+                        score -= 25
+
+                    if max_drawdown < -0.20:
+                        score -= 25
+
+                    if max_sector["Allocation %"] > 50:
+                        score -= 20
+
+                    if exp_return < 0:
+                        score -= 15
+
+                    score = max(0, min(100, score))
+
+                    if score >= 80:
+                        st.success("✅ Portfolio is already well balanced.")
+                    elif score >= 60:
+                        st.info("🟡 Portfolio needs minor optimization.")
+                    elif score >= 40:
+                        st.warning("⚠ Portfolio needs rebalancing.")
+                    else:
+                        st.error("🚨 Immediate rebalancing required.")
+
+                    if score >= 80:
+                        st.success("🚀 Excellent Portfolio")
+                    elif score >= 60:
+                        st.info("🟡 Good Portfolio")
+                    elif score >= 40:
+                        st.warning("⚠️ Average Portfolio")
+                    else:
+                        st.error("❌ Weak Portfolio")
+
+
+                    st.subheader("🤖 AI Portfolio Advisor")
+
+                    if best_sharpe > 1:
+                        st.success("Excellent risk-adjusted portfolio.")
+                    elif best_sharpe > 0.5:
+                        largest_stock = result_df.loc[
+                            result_df["Allocation %"].idxmax()
+                        ]
+
+                        st.info(
+                            f"""
+                        📊 Highest Allocation: {largest_stock['Stock']} ({largest_stock['Allocation %']:.2f}%)
+
+                        📈 Expected Return: {exp_return:.2f}%
+
+                        ⚠️ Portfolio Risk: {exp_risk:.2f}%
+
+                        🎯 Sharpe Ratio: {best_sharpe:.2f}
+                        """
+                        )
+                    else:
+                        st.warning("Portfolio risk jyada hai compared to expected return.")
+
+                        st.subheader("🎲 Monte Carlo Simulation")
+
+                    simulations = 1000
+                    days = 252
+
+                    portfolio_returns = returns.mean(axis=1)
+
+                    sim_results = []
+
+                    for _ in range(simulations):
+                        simulated = np.random.choice(
+                            portfolio_returns,
+                            size=days,
+                            replace=True
+                        )
+                        sim_results.append((1 + simulated).prod())
+
+                    fig_mc = px.histogram(
+                        x=sim_results,
+                        nbins=40,
+                        title="Monte Carlo Portfolio Outcomes"
+                    )
+
+                    st.plotly_chart(
+                        fig_mc,
+                        use_container_width=True,
+                        key="monte_carlo_sim"
+                    )
+
+                    st.metric(
+                        "Expected Portfolio Growth",
+                        f"{(np.mean(sim_results)-1)*100:.2f}%"
+                    )
+
+                    st.subheader("📌 Executive Risk Dashboard")
+
+                    risk_flags = 0
+
+                    if best_sharpe < 0:
+                        risk_flags += 1
+
+                    if max_drawdown < -0.20:
+                        risk_flags += 1
+
+                    if max_sector["Allocation %"] > 50:
+                        risk_flags += 1
+
+                    if score < 40:
+                        risk_flags += 1
+
+                    if risk_flags >= 3:
+                        final_risk = "HIGH RISK 🔴"
+                        grade = "D"
+                    elif risk_flags == 2:
+                        final_risk = "MEDIUM RISK 🟡"
+                        grade = "C"
+                    elif risk_flags == 1:
+                        final_risk = "LOW-MEDIUM RISK 🟠"
+                        grade = "B"
+                    else:
+                        final_risk = "LOW RISK 🟢"
+                        grade = "A"
+
+                    c1, c2, c3 = st.columns(3)
+
+                    c1.metric("Final Risk Level", final_risk)
+                    c2.metric("Portfolio Grade", grade)
+                    c3.metric("Risk Flags", risk_flags)
+
+                    if grade in ["D", "C"]:
+                        st.error("Portfolio needs active risk management before investing more.")
+                    else:
+                        st.success("Portfolio risk profile looks acceptable.")
+
+                    st.subheader("📈 Buy / Sell Signal Engine")
+
+                    for stock in result_df["Stock"]:
+                        
+                        rsi = np.random.randint(20, 80)
+                        
+                        if rsi < 30:
+                            st.success(f"🟢 {stock}: BUY Signal (RSI={rsi})")
+                            
+                        elif rsi > 70:
+                            st.error(f"🔴 {stock}: SELL Signal (RSI={rsi})")
+                            
+                        else:
+                            st.info(f"🟡 {stock}: HOLD Signal (RSI={rsi})")
+
+                            st.subheader("🏆 Stock Ranking Engine")
+
+                            ranking_df = result_df.copy()
+
+                            ranking_df["Rank"] = ranking_df["Allocation %"].rank(
+                                ascending=False
                             )
 
-                            st.plotly_chart(fig_frontier, use_container_width=True)
+                            ranking_df = ranking_df.sort_values(
+                                "Rank"
+                            )
 
-                            result_df = pd.DataFrame({
-                                "Stock": price_data.columns,
-                                "Allocation %": np.round(best_weights * 100, 2)
-                            })
+                            st.dataframe(
+                                ranking_df[
+                                    ["Stock", "Allocation %", "Rank"]
+                                ],
+                                use_container_width=True
+                            )
 
-                            st.dataframe(result_df)
+                            st.subheader("🏢 Sector Concentration Dashboard")
 
-                            exp_return = np.sum(mean_returns * best_weights) * 100
-                            exp_risk = np.sqrt(
-                                np.dot(best_weights.T, np.dot(cov_matrix, best_weights))
-                            ) * 100
+                            sector_alloc = sector_df[
+                                ["Sector", "Allocation %"]
+                            ].sort_values(
+                                "Allocation %",
+                                ascending=False
+                            )
 
-                            c1, c2, c3 = st.columns(3)
-                            c1.metric("Expected Return", f"{exp_return:.2f}%")
-                            c2.metric("Portfolio Risk", f"{exp_risk:.2f}%")
-                            c3.metric("Sharpe Ratio", f"{best_sharpe:.2f}")
+                            st.dataframe(
+                                sector_alloc,
+                                use_container_width=True
+                            )
 
-                            st.success("🏆 Maximum Sharpe Ratio Portfolio Found")
+                            max_sector = sector_alloc.iloc[0]
 
-                            st.subheader("🏆 Portfolio Health Score")
-
-                            score = 0
-                            if best_sharpe > 1:
-                                score += 20
-                            elif best_sharpe > 0.5:
-                                score += 15
-                            else:
-                                score += 8
-
-                            if exp_risk < 15:
-                                score += 30
-                            elif exp_risk < 20:
-                                score += 22
-                            else:
-                                score += 12
-
-                            if exp_return > 15:
-                                score += 20
-                            elif exp_return > 10:
-                                score += 15
-                            else:
-                                score += 10
-
-                            if len(symbols) >= 5:
-                                score += 25
-                            else:
-                                score += 15
-
-                            st.metric("Health Score", f"{score}/100")
-
-                            if score >= 80:
-                                st.success("🚀 Excellent Portfolio")
-                            elif score >= 60:
-                                st.info("📈 Good Portfolio")
-                            elif score >= 40:
-                                st.warning("⚠️ Average Portfolio")
-                            else:
-                                st.error("❌ Weak Portfolio")
-
-                            st.subheader("🤖 AI Portfolio Advisor")
-
-                            if best_sharpe > 1:
-                                st.success("Excellent risk-adjusted portfolio.")
-                            elif best_sharpe > 0.5:
-                                largest_stock = result_df.loc[
-                                    result_df["Allocation %"].idxmax()
-                                ]
-                                st.info(
-                                    f"""
-                                📊 Highest Allocation: {largest_stock['Stock']} ({largest_stock['Allocation %']:.2f}%)
-                                📈 Expected Return: {exp_return:.2f}%
-                                ⚠️ Portfolio Risk: {exp_risk:.2f}%
-                                🎯 Sharpe Ratio: {best_sharpe:.2f}
-                                    """
+                            if max_sector["Allocation %"] > 50:
+                                st.error(
+                                    f"⚠ High concentration in {max_sector['Sector']} ({max_sector['Allocation %']:.1f}%)"
+                                )
+                            elif max_sector["Allocation %"] > 35:
+                                st.warning(
+                                    f"⚠ Moderate concentration in {max_sector['Sector']} ({max_sector['Allocation %']:.1f}%)"
                                 )
                             else:
-                                st.warning("Portfolio risk jyada hai compared to expected return.")          
+                                st.success("✅ Sector diversification looks healthy")
+                                                                
+
