@@ -1235,6 +1235,12 @@ else:
 
 st.sidebar.markdown("### 🏆 Top Watchlist Pick")
 
+import pandas as pd
+
+if "top_pick" not in locals():
+    top_pick = {"Score": 0, "Stock": "N/A"}
+
+
 if top_pick["Score"] >= 80:
     st.sidebar.success(
         f"🟢 {top_pick['Stock']} strongest opportunity hai | Score: {top_pick['Score']}"
