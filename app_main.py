@@ -272,10 +272,11 @@ elif return_pct > 10:
     st.sidebar.success("Portfolio profitable hai. Partial profit booking consider kar sakte ho.")
 else:
     st.sidebar.info("Portfolio stable zone me hai.")
+    
+profit_loss = 0
 
 st.sidebar.metric(
         "Profit / Loss",
-         profit_loss = 0
         f"₹{profit_loss:,.2f}",
         f"{return_pct:.2f}%"
     )
