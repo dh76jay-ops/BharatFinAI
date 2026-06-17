@@ -1184,6 +1184,8 @@ if signals:
 # WATCHLIST BATTLE ROYALE
 # --------------------------------
 
+watchlist_table = []
+
 if len(watchlist_table) >= 3:
 
     top1 = watchlist_table.iloc[0]
