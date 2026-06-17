@@ -275,6 +275,7 @@ else:
 
 st.sidebar.metric(
         "Profit / Loss",
+    profit_loss = profit_loss if "profit_loss" in locals() else 0
         f"₹{profit_loss:,.2f}",
         f"{return_pct:.2f}%"
     )
