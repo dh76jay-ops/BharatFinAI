@@ -1377,6 +1377,15 @@ if "best_stock" not in locals():
 
 if "worst_stock" not in locals():
     worst_stock = {"Stock": "N/A", "P/L %": 0}
+    
+if "best_stock" not in locals():
+    best_stock = {"Stock": "N/A", "P/L %": 0}
+
+if "worst_stock" not in locals():
+    worst_stock = {"Stock": "N/A", "P/L %": 0}
+
+if "portfolio_df" not in locals():
+    portfolio_df = []
 
 report = f"""
 BHARATFINAI REPORT
