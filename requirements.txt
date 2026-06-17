@@ -2,7 +2,10 @@ streamlit
 yfinance
 pandas
 plotly
+matplotlib
+seaborn
 groq
 python-dotenv
 textblob
 newsapi-python
+
