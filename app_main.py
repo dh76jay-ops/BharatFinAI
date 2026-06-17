@@ -1221,6 +1221,10 @@ if len(watchlist_table) >= 3:
 
 st.sidebar.markdown("### 🚨 Oversold Alerts")
 
+import pandas as pd
+
+oversold_stocks = pd.DataFrame()
+
 if not oversold_stocks.empty:
     for _, row in oversold_stocks.iterrows():
         st.sidebar.warning(
