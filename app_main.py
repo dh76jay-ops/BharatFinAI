@@ -1372,13 +1372,16 @@ except Exception as e:
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 📄 Export Report")
 
+if "best_stock" not in locals():
+    best_stock = {"Stock": "N/A", "P/L %": 0}
+
+if "worst_stock" not in locals():
+    worst_stock = {"Stock": "N/A", "P/L %": 0}
+
 report = f"""
 BHARATFINAI REPORT
 
 Portfolio Health Score : {health_score}/100
-
-if "best_stock" not in locals():
-best_stock = {"Stock": "N/A", "P/L %": 0}
 
 Best Stock : {best_stock['Stock']}
 Worst Stock : {worst_stock['Stock']}
