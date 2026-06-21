@@ -222,6 +222,56 @@ st.sidebar.metric(
     f"{health_score}/100"
 )
 
+st.subheader("📌 Executive Portfolio Summary")
+
+risk_level = "LOW RISK"
+portfolio_grade = "A"
+main_weakness = "No major weakness detected"
+suggested_action = "Portfolio looks stable"
+
+if health_score < 40:
+    risk_level = "HIGH RISK"
+    portfolio_grade = "D"
+    main_weakness = "High risk compared to expected return"
+    suggested_action = "Immediate rebalancing required"
+elif health_score < 60:
+    risk_level = "MEDIUM RISK"
+    portfolio_grade = "C"
+    main_weakness = "Portfolio needs optimization"
+    suggested_action = "Reduce risky exposure"
+elif health_score < 80:
+    risk_level = "LOW-MEDIUM RISK"
+    portfolio_grade = "B"
+    main_weakness = "Minor concentration risk"
+    suggested_action = "Improve diversification"
+
+col1, col2 = st.columns(2)
+col3, col4 = st.columns(2)
+
+col1.metric("Risk Level", risk_level)
+col2.metric("Portfolio Grade", portfolio_grade)
+col3.info(f"Main Weakness: {main_weakness}")
+col4.warning(f"Suggested Action: {suggested_action}")
+
+st.markdown("---")
+st.subheader("🎯 AI Confidence Meter")
+
+confidence = min(95, max(50, health_score))
+
+st.progress(confidence / 100)
+
+st.metric(
+    "AI Confidence",
+    f"{confidence}%"
+)
+
+if confidence >= 80:
+    st.success("🟢 High Confidence")
+elif confidence >= 60:
+    st.warning("🟡 Medium Confidence")
+else:
+    st.error("🔴 Low Confidence")
+
 st.sidebar.progress(health_score / 100)
 
 if health_score >= 75:
@@ -492,6 +542,29 @@ with tab1:
             df = calc_indicators(df)
             latest = df.iloc[-1]
             prev = df.iloc[-2]
+
+            st.markdown("---")
+            st.subheader("🏦 Institutional Smart Money Tracker")
+
+            smart_money_score = 50
+
+            avg_volume = df["Volume"].tail(30).mean()
+            latest_volume = latest["Volume"]
+
+            if latest_volume > avg_volume * 1.5:
+                smart_money_score += 25
+                smart_signal = "Strong Institutional Buying"
+            elif latest_volume > avg_volume:
+                smart_money_score += 10
+                smart_signal = "Moderate Institutional Activity"
+            else:
+                smart_money_score -= 10
+                smart_signal = "Weak Institutional Interest"
+
+            st.metric("Smart Money Score", f"{smart_money_score}/100")
+            st.progress(smart_money_score / 100)
+            st.info(f"Signal: {smart_signal}")
+
             change = ((latest['Close'] - prev['Close']) / prev['Close']) * 100
             vol_ratio = latest['Volume'] / latest['Vol_MA'] if latest['Vol_MA'] > 0 else 1
             week52_pos = ((latest['Close'] - df['Close'].min()) /
@@ -629,9 +702,215 @@ with tab1:
                 xaxis_rangeslider_visible=False,
                 legend=dict(orientation="h", yanchor="bottom", y=1.02,
                            xanchor="right", x=1, font=dict(size=10)))
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True,key="nain_stock_chart")
 
-            # AI Analysis
+            st.markdown("---")
+            st.subheader("🏛 FII / DII Flow")
+
+            fii_score = 60 if vol_ratio > 1 else 40
+
+            st.metric(
+                "Institutional Flow Score",
+                fii_score
+            )
+
+            if fii_score > 55:
+                st.success("🟢 FII Buying Interest")
+            else:
+                st.warning("🟡 Weak Institutional Flow")
+
+# PASTE HERE 👇
+
+                st.markdown("---")
+                st.divider()
+                st.markdown("### 🏦 FII / DII Smart Money Analysis")
+
+                fii_score = 40
+
+                if latest["MACD"] > latest["MACD_Signal"]:
+                    fii_score += 20
+
+                if rsi_val > 50:
+                    fii_score += 20
+
+                if vol_ratio > 1:
+                    fii_score += 20
+
+                if fii_score >= 80:
+                    flow_status = "🟢 Strong Institutional Buying"
+                elif fii_score >= 60:
+                    flow_status = "🟡 Moderate Institutional Interest"
+                else:
+                    flow_status = "🔴 Weak Institutional Flow"
+
+                st.metric("Institutional Flow Score", f"{fii_score}/100")
+                st.info(flow_status)
+
+                if fii_score >= 80:
+                    st.success(
+                        "Smart Money View: Institutions accumulation phase me dikh rahe hain."
+                    )
+                elif fii_score >= 60:
+                    st.warning(
+                        "Smart Money View: Mixed institutional activity dikh rahi hai."
+                    )
+                else:
+                    st.error(
+                        "Smart Money View: Institutions aggressively buy karte nahi dikh rahe."
+                    )
+
+                    st.markdown("---")
+                st.subheader("📊 Multi-Timeframe Analysis")
+
+                daily_trend = "🟢 Bullish" if latest["MACD"] > latest["MACD_Signal"] else "🔴 Bearish"
+
+                weekly_trend = "🟢 Bullish" if rsi_val > 50 else "🟡 Neutral"
+
+                sma50_value = df["Close"].rolling(50).mean().iloc[-1]
+                monthly_trend = "🟢 Bullish" if latest["Close"] > sma50_value else "🔴 Bearish"
+                
+                trend_score = 0
+
+                if "Bullish" in daily_trend:
+                    trend_score += 35
+
+                if "Bullish" in weekly_trend:
+                    trend_score += 35
+
+                if "Bullish" in monthly_trend:
+                    trend_score += 30
+
+                st.metric("Overall Trend Strength", f"{trend_score}/100")
+
+                st.info(f"Daily Trend: {daily_trend}")
+                st.info(f"Weekly Trend: {weekly_trend}")
+                st.info(f"Monthly Trend: {monthly_trend}")
+
+                st.subheader("📰 News Sentiment AI")
+
+                sentiment_score = signal_score * 15
+
+                if sentiment_score >= 70:
+                    sentiment = "🟢 Positive"
+                elif sentiment_score >= 40:
+                    sentiment = "🟡 Neutral"
+                else:
+                    sentiment = "🔴 Negative"
+
+                st.metric("News Sentiment Score", f"{sentiment_score}/100")
+                st.info(f"Market Sentiment: {sentiment}")
+
+                st.markdown("---")
+                st.subheader("⚡ Stock Strength Meter")
+
+                strength = int((rsi_val))
+
+                st.progress(strength / 100)
+
+                st.metric(
+                    "Stock Strength",
+                    f"{strength}/100"
+                )
+
+                if strength >= 75:
+                    st.success("🟢 Strong Stock")
+                elif strength >= 50:
+                    st.warning("🟡 Average Strength")
+                else:
+                    st.error("🔴 Weak Stock")
+
+                    st.markdown("---")
+                    st.subheader("🩺 Portfolio Doctor")
+
+                    portfolio_score = max(0, min(100, int((100 - risk_level_score) + health_score/2)))
+
+                    st.metric("Portfolio Health Score", f"{portfolio_score}/100")
+
+                    if portfolio_score >= 80:
+                        st.success("✅ Healthy Portfolio")
+                    elif portfolio_score >= 60:
+                        st.warning("🟡 Portfolio Needs Improvement")
+                    else:
+                        st.error("🔴 Portfolio Risky")
+
+                        if portfolio_score < 60:
+
+                            st.warning("""
+                            Portfolio Problems:
+                            
+                            • Risk jyada hai
+                            
+                            • Diversification kam hai
+                            
+                            • Rebalancing ki zarurat hai
+                            """)
+                        else:
+                            st.info("""
+                            Portfolio Stable Hai
+                            
+                            • Risk manageable hai
+                            
+                            • Long term holding possible hai
+                            """)
+                        st.markdown("---")
+                        st.subheader("📈 AI Investment Thesis Generator")
+
+                    with st.expander("Generate Investment Thesis"):
+
+                        thesis = f"""
+                        STOCK: {company}
+
+                        Current Price: ₹{current_price:.2f}
+
+                        RSI: {rsi_val:.1f}
+
+                        AI VIEW:
+
+                        Strengths:
+                        - Strong market presence
+                        - Established business model
+                        - Technical indicators monitored
+
+                        Risks:
+                        - Market volatility
+                        - Sector specific risks
+                        - Economic slowdown impact
+
+                        Investment Thesis:
+                        This stock should be evaluated based on long-term fundamentals,
+                        technical momentum and risk profile.
+
+                        Verdict:
+                        {signal}
+                        """
+
+                        st.write(thesis) 
+
+                        st.markdown("---")
+                    st.subheader("🎯 AI Recommendation")
+
+                    if strength >= 80:
+                        verdict = "🟢 STRONG BUY"
+                    elif strength >= 65:
+                        verdict = "🟢 BUY"
+                    elif strength >= 45:
+                        verdict = "🟡 HOLD"
+                    else:
+                        verdict = "🔴 AVOID"
+
+                    st.success(f"""
+                    Final Verdict: {verdict}
+
+                    Confidence Score: {strength}/100
+
+                    AI Reason:
+                    • RSI: {rsi_val:.1f}
+                    • MACD: {'Bullish' if latest['MACD'] > latest['MACD_Signal'] else 'Bearish'}
+                    • 52W Position: {weeks52_pos:.0f}%
+                    • News Sentiment: {sentiment}
+                    """) 
+
+                # AI Analysis
             st.divider()
             st.subheader("🤖 AI Analysis — Hindi Mein")
 
@@ -642,8 +921,8 @@ with tab1:
 
             with st.spinner("🧠 AI analysis kar raha hai..."):
                 try:
-                    st.write("API Loaded:", bool(api_key))
-                    st.write("Key Start:", api_key[:10])
+                    #st.write("API Loaded:", bool(api_key))
+                    #st.write("Key Start:", api_key[:10])
 
                     client = Groq(api_key=api_key)
                     sma50 = latest['SMA_50'] if pd.notna(latest['SMA_50']) else 0
@@ -708,6 +987,57 @@ SUMMARY
                     {analysis}
                     """
 
+                    # YAHAN PASTE KARO 👇
+
+                    st.markdown("### 🎯 AI Investment Thesis")
+
+                    confidence = int((93 + 70 + 77) / 3)
+
+                    high_52 = df["High"].rolling(252).max().iloc[-1]
+                    low_52 = df["Low"].rolling(252).min().iloc[-1]
+
+                    weeks52_pos = ((latest["Close"] - low_52) /
+                                (high_52 - low_52)) * 100
+                    
+                    if pd.isna(weeks52_pos): weeks52_pos = 50
+
+                    bull_case = [
+                        "MACD Bullish" if latest['MACD'] > latest['MACD_Signal'] else "MACD Weak",
+                        f"52W Position {weeks52_pos:.0f}%",
+                        f"RSI {rsi_val:.1f}"
+                    ]
+
+                    bear_case = [
+                        "Low Volume" if vol_ratio < 1 else "Healthy Volume",
+                        "Weak Institutional Flow"
+                    ]
+
+                    signal = "Hold" if signal_score >= 3 else "Avoid"
+                    if signal_score >= 5:
+                        signal = "Buy"
+                    elif signal_score >= 3:
+                        signal = "Hold"
+                    else:
+                        signal = "Avoid"
+
+                    st.info(f"""
+                    📈 Bull Case:
+                    • {bull_case[0]}
+                    • {bull_case[1]}
+                    • {bull_case[2]}
+
+                    📉 Bear Case:
+                    • {bear_case[0]}
+                    • {bear_case[1]}
+
+                    🎯 Verdict: {signal}
+
+                    🔥 Confidence: {confidence}%
+                    """)
+
+                    # FIR DOWNLOAD BUTTON
+                    
+
                     st.download_button(
                         "📄 Download Analysis Report",
                         data=report_text,
@@ -727,6 +1057,65 @@ SUMMARY
                         st.error(f"🔴 Negative News Sentiment ({news_score})")
                     else:
                         st.warning("🟡 Neutral News Sentiment")
+
+                        # AI Risk Meter
+                        st.divider()
+                        st.subheader("🛡️ AI Risk Meter")
+
+                        volatility = abs(latest["Close"] - latest["Open"]) / latest["Close"] * 100
+
+                        if volatility < 2:
+                            risk_level = "🟢 Low Risk"
+                            risk_score = 85
+                        elif volatility < 5:
+                            risk_level = "🟡 Medium Risk"
+                            risk_score = 65
+                        else:
+                            risk_level = "🔴 High Risk"
+                            risk_score = 35
+
+                        max_downside = round(latest["Close"] * 0.90, 2)
+
+                        st.metric("Risk Score", f"{risk_score}/100")
+                        st.info(f"Risk Level: {risk_level}")
+                        st.warning(f"Maximum Downside Estimate: ₹{max_downside}")
+
+                        if risk_score >= 80:
+                            st.success("Capital Protection Strong Hai.")
+                        elif risk_score >= 60:
+                            st.warning("Moderate Risk Present Hai.")
+                        else:
+                            st.error("Risk High Hai, Position Size Kam Rakho.")
+
+                            # Hedge Fund Conviction Dashboard
+                        st.divider()
+                        st.subheader("🏦 Hedge Fund Conviction Dashboard")
+
+                        conviction_score = int((80 + fii_score + 70 + risk_score) / 4)
+
+                        if conviction_score >= 80:
+                            conviction = "🟢 HIGH CONVICTION"
+                            action = "Accumulation candidate"
+                        elif conviction_score >= 60:
+                            conviction = "🟡 MEDIUM CONVICTION"
+                            action = "Watchlist / partial position"
+                        else:
+                            conviction = "🔴 LOW CONVICTION"
+                            action = "Avoid / wait for confirmation"
+
+                        c1, c2 = st.columns(2)
+
+                        with c1:
+                            st.metric("Conviction Score", f"{conviction_score}/100")
+                            st.info(conviction)
+
+                        with c2:
+                            st.metric("Suggested Action", action)
+                            st.warning("Use position sizing. Not financial advice.")
+
+                        st.caption(
+                            "Based on AI Thesis, Institutional Flow, Multi-Timeframe Trend and Risk Meter."
+                        )
 
                     # Trust Engine
                     st.divider()
@@ -769,6 +1158,132 @@ SUMMARY
 
                 except Exception as e:
                     st.error(f"❌ AI Error: {e}")
+
+                    st.divider()
+                st.subheader("🎯 AI Entry / Exit Zone")
+
+                entry_zone_low = latest["Close"] * 0.98
+                entry_zone_high = latest["Close"] * 1.00
+
+                breakout_level = latest["Close"] * 1.02
+
+                target1 = latest["Close"] * 1.10
+                target2 = latest["Close"] * 1.20
+
+                stop_loss = latest["Close"] * 0.95
+
+                st.success(
+                    f"""
+                🎯 Ideal Buy Zone: ₹{entry_zone_low:.2f} - ₹{entry_zone_high:.2f}
+
+                🚀 Breakout Level: ₹{breakout_level:.2f}
+
+                💰 Target 1: ₹{target1:.2f}
+
+                💰 Target 2: ₹{target2:.2f}
+
+                🛑 Stop Loss: ₹{stop_loss:.2f}
+                """
+                )
+
+                risk_reward = (target1 - latest["Close"]) / (latest["Close"] - stop_loss)
+
+                st.info(f"Risk Reward Ratio: 1 : {risk_reward:.1f}")
+
+                st.divider()
+                st.subheader("📊 Portfolio Health Score")
+
+                portfolio_score = int(
+                    (trust * 0.4) +
+                    (70 * 0.3) +
+                    (fii_score * 0.3)
+                )
+
+                st.metric("Portfolio Health", f"{portfolio_score}/100")
+
+                if portfolio_score >= 80:
+                    st.success("🟢 Institutional Grade Portfolio")
+                elif portfolio_score >= 60:
+                    st.warning("🟡 Moderate Quality Portfolio")
+                else:
+                    st.error("🔴 Weak Portfolio Structure")
+
+                    st.markdown("---")
+                    st.subheader("🏆 Final AI Grade")
+
+                    if portfolio_score >= 90:
+                        st.success("🏆 Grade A+ | Elite Portfolio")
+                    elif portfolio_score >= 80:
+                        st.success("🥇 Grade A | Strong Portfolio")
+                    elif portfolio_score >= 70:
+                        st.info("🥈 Grade B | Good Portfolio")
+                    elif portfolio_score >= 60:
+                        st.warning("🥉 Grade C | Average Portfolio")
+                    else:
+                        st.error("⚠️ Grade D | High Risk Portfolio")
+
+        st.markdown("---")
+        st.subheader("🩺 AI Portfolio Doctor")
+
+        strengths = []
+        weaknesses = []
+
+        if rsi_val > 50:
+            strengths.append("Momentum Strong")
+
+        if latest["MACD"] > latest["MACD_Signal"]:
+            strengths.append("Bullish MACD")
+
+        if week52_pos < 80:
+            strengths.append("Safe Distance From 52W High")
+
+        if rsi_val < 40:
+            weaknesses.append("Weak Momentum")
+
+        if week52_pos > 90:
+            weaknesses.append("Near 52W High Risk")
+
+        st.success("💪 Strengths: " + ", ".join(strengths))
+
+        if weaknesses:
+            st.warning("⚠ Weaknesses: " + ", ".join(weaknesses))
+        else:
+            st.success("✅ No Major Weakness Found")
+
+        if portfolio_score >= 80:
+            st.success("🚀 Action: Strong Hold")
+        elif portfolio_score >= 60:
+            st.info("👀 Action: Watchlist / Partial Position")
+        else:
+            st.error("🛑 Action: Avoid")
+
+        st.markdown("---")
+        st.subheader("🏆 Warren Buffett Quality Score")
+
+        buffett_score = 0
+
+        if week52_pos < 80:
+            buffett_score += 25
+
+        if rsi_val > 50:
+            buffett_score += 25
+
+        if latest["MACD"] > latest["MACD_Signal"]:
+            buffett_score += 25
+
+        if health_score >= 70:
+            buffett_score += 25
+
+        st.metric("Buffett Score", f"{buffett_score}/100")
+
+        if buffett_score >= 80:
+            st.success("🟢 Grade A | Buffett Style Compounder")
+        elif buffett_score >= 60:
+            st.info("🔵 Grade B | Good Long Term Candidate")
+        elif buffett_score >= 40:
+            st.warning("🟡 Grade C | Average Business Quality")
+        else:
+            st.error("🔴 Grade D | Not Buffett Style")
 
             # CSV Export
             with st.expander("📊 Raw Data + Export"):
