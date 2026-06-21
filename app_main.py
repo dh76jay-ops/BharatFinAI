@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 from textblob import TextBlob
 import pandas as pd
 import numpy as np
-import pandas_ta as ta
+#import pandas_ta as ta
 from groq import Groq
 import plotly.graph_objects as go
 import plotly.express as px
@@ -210,6 +210,8 @@ for _, row in df_port.iterrows():
 stock_count = len(df_port)
 diversification_score = min(stock_count * 20, 100)
 
+return_pct = float(return_pct) if "return_pct" in locals() else 0
+
 profit_score = 100 if return_pct > 10 else 75 if return_pct > 0 else 50 if return_pct > -10 else 25
 
 health_score = int((diversification_score * 0.4) + (profit_score * 0.6))
@@ -320,6 +322,8 @@ elif return_pct > 10:
     st.sidebar.success("Portfolio profitable hai. Partial profit booking consider kar sakte ho.")
 else:
     st.sidebar.info("Portfolio stable zone me hai.")
+    
+profit_loss = 0
 
 st.sidebar.metric(
         "Profit / Loss",
@@ -1695,6 +1699,8 @@ if signals:
 # WATCHLIST BATTLE ROYALE
 # --------------------------------
 
+watchlist_table = []
+
 if len(watchlist_table) >= 3:
 
     top1 = watchlist_table.iloc[0]
@@ -1730,6 +1736,10 @@ if len(watchlist_table) >= 3:
 
 st.sidebar.markdown("### 🚨 Oversold Alerts")
 
+import pandas as pd
+
+oversold_stocks = pd.DataFrame()
+
 if not oversold_stocks.empty:
     for _, row in oversold_stocks.iterrows():
         st.sidebar.warning(
@@ -1739,6 +1749,12 @@ else:
     st.sidebar.info("Abhi koi oversold opportunity nahi mili.")
 
 st.sidebar.markdown("### 🏆 Top Watchlist Pick")
+
+import pandas as pd
+
+if "top_pick" not in locals():
+    top_pick = {"Score": 0, "Stock": "N/A"}
+
 
 if top_pick["Score"] >= 80:
     st.sidebar.success(
@@ -1870,6 +1886,21 @@ except Exception as e:
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 📄 Export Report")
+
+if "best_stock" not in locals():
+    best_stock = {"Stock": "N/A", "P/L %": 0}
+
+if "worst_stock" not in locals():
+    worst_stock = {"Stock": "N/A", "P/L %": 0}
+    
+if "best_stock" not in locals():
+    best_stock = {"Stock": "N/A", "P/L %": 0}
+
+if "worst_stock" not in locals():
+    worst_stock = {"Stock": "N/A", "P/L %": 0}
+
+if "portfolio_df" not in locals():
+    portfolio_df = []
 
 report = f"""
 BHARATFINAI REPORT

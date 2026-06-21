@@ -1,46 +1,100 @@
-# BharatFinAI 🇮🇳
-> AI-Powered Stock Analysis Tool for Indian Markets
+🇮🇳 BharatFinAI
 
+Quantitative Finance and Portfolio Analytics Platform for Indian Markets
 
+BharatFinAI is a quantitative finance platform developed to analyze portfolio risk, optimize allocations, evaluate stock opportunities, and provide data-driven investment insights for Indian markets.
 
-![Python](https://img.shields.io/badge/Python-3.9+-blue)
+The project combines portfolio optimization, risk analytics, technical indicators, Monte Carlo simulation, and portfolio intelligence into a single interactive dashboard.
 
+---
 
+Key Features
 
+Portfolio Analytics
 
-![Streamlit](https://img.shields.io/badge/Streamlit-1.0+-red)
+- Portfolio Optimization
+- Expected Return Analysis
+- Portfolio Risk Measurement
+- Sharpe Ratio Analysis
 
+Risk Management
 
+- Value at Risk (VaR)
+- Conditional Value at Risk (CVaR)
+- Drawdown Risk Analysis
+- Sector Concentration Risk
+- Correlation Analysis
 
+Quantitative Finance
 
-![Status](https://img.shields.io/badge/Status-Active-green)
+- Monte Carlo Portfolio Simulation
+- Portfolio Health Score
+- Executive Risk Dashboard
+- Portfolio Ranking System
 
+Market Intelligence
 
+- Buy / Hold / Sell Signal Engine
+- Technical Indicator Analysis
+- Stock Ranking Engine
+- Portfolio Rebalancing Suggestions
 
-## 🚀 What is BharatFinAI?
-A complete Quant Finance + AI tool built 
-for Indian retail investors.
-Hindi language support included.
+---
 
-## ✅ Features
-- 📈 AI Buy/Hold/Sell Signals
-- 🧠 XGBoost ML Model
-- 📊 Portfolio Optimizer (MPT)
-- 🎲 Monte Carlo Simulation
-- ⚠️ VaR Risk Calculator
-- 🔍 FOMO & Psychology Detection
-- 🇮🇳 Hindi AI Analysis
-- 📉 Backtesting Engine
+Technology Stack
 
-## 🛠️ Tech Stack
-Python | Streamlit | XGBoost | 
-Scipy | Plotly | Pandas | yfinance
+- Python
+- Streamlit
+- Pandas
+- NumPy
+- Plotly
+- Matplotlib
+- Seaborn
+- yFinance
+- Scikit-Learn
 
-## 👤 About Developer
-Self-taught developer.
-Mechanical Engineering 2nd Year.
-Ujjain Engineering College.
-No CS degree - just curiosity.
+---
 
-## 📞 Contact
-LinkedIn: https://www.linkedin.com/in/dhananjay-bopche-602061328?utm_source=share_via&utm_content=profile&utm_medium=member_android
+Learning Outcomes
+
+This project demonstrates practical understanding of:
+
+- Quantitative Finance
+- Portfolio Theory
+- Risk Management
+- Financial Analytics
+- Data Visualization
+- Software Engineering
+- End-to-End Product Development
+
+---
+
+Project Structure
+
+BharatFinAI
+│
+├── ai/
+├── core/
+├── data/
+├── ui/
+├── utils/
+│
+├── app_main.py
+├── requirements.txt
+└── README.md
+
+---
+
+Developer
+
+Dhananjay Bopche
+
+Mechanical Engineering Student
+
+Self-driven project focused on quantitative finance, portfolio analytics, and software engineering.
+
+---
+
+Disclaimer
+
+This project is intended for educational and research purposes only and should not be considered financial advice.
