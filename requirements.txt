@@ -1,8 +1,6 @@
 streamlit
 pandas
-numpy==2.2.6
-numba==0.61.2
-pandas-ta
+numpy
 yfinance
 plotly
 matplotlib
@@ -10,5 +8,3 @@ seaborn
 textblob
 groq
 newsapi-python
-numpy
-
