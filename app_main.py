@@ -592,7 +592,12 @@ with tab1:
             st.info(f"Signal: {smart_signal}")
 
             change = ((latest['Close'] - prev['Close']) / prev['Close']) * 100
-            vol_ratio = latest['Volume'] / latest['Vol_MA'] if latest['Vol_MA'] > 0 else 1
+            avg_vol = df["Volume"].tail(20).mean()
+
+            if avg_vol > 0:
+                vol_ratio = latest["Volume"] / avg_vol
+            else:
+                vol_ratio = 1
             week52_pos = ((latest['Close'] - df['Close'].min()) /
                           (df['Close'].max() - df['Close'].min()) * 100)
             rsi_val = latest['RSI']
