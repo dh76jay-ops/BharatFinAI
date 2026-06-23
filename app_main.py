@@ -1541,16 +1541,24 @@ with tab4:
             price1 = df1["Close"].iloc[-1]
             price2 = df2["Close"].iloc[-1]
 
-            rsi1 = ta.rsi(df1["Close"], length=14).dropna().iloc[-1]
-            rsi2 = ta.rsi(df2["Close"], length=14).dropna().iloc[-1]
+           # rsi1 = ta.rsi(df1["Close"], length=14).dropna().iloc[-1]
+            #rsi2 = ta.rsi(df2["Close"], length=14).dropna().iloc[-1]
 
-            macd1 = ta.macd(df1["Close"])
-            macd2 = ta.macd(df2["Close"])
+            #macd1 = ta.macd(df1["Close"])
+            #macd2 = ta.macd(df2["Close"])
+            rsi1= 50 
+            rsi2 = 50
 
-            m1 = macd1["MACD_12_26_9"].dropna().iloc[-1]
-            ms1 = macd1["MACDs_12_26_9"].dropna().iloc[-1]
-            m2 = macd2["MACD_12_26_9"].dropna().iloc[-1]
-            ms2 = macd2["MACDs_12_26_9"].dropna().iloc[-1]
+            m1 = 0
+            ms1 = 0
+
+            m2 = 0
+            ms2 = 0
+
+            #m1 = macd1["MACD_12_26_9"].dropna().iloc[-1]
+            #ms1 = macd1["MACDs_12_26_9"].dropna().iloc[-1]
+            #m2 = macd2["MACD_12_26_9"].dropna().iloc[-1]
+            #ms2 = macd2["MACDs_12_26_9"].dropna().iloc[-1]
 
             w52_1 = ((price1 - df1["Close"].min()) / (df1["Close"].max() - df1["Close"].min())) * 100
             w52_2 = ((price2 - df2["Close"].min()) / (df2["Close"].max() - df2["Close"].min())) * 100
