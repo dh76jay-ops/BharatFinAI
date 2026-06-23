@@ -1,4 +1,6 @@
-#import pandas_ta as ta
+import pandas as pd
+import numpy as np
+import pandas_ta as ta
 
 def calc_indicators(df):
     df["RSI"] = ta.rsi(df["Close"], length=14)

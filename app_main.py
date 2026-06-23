@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 from textblob import TextBlob
 import pandas as pd
 import numpy as np
-#import pandas_ta as ta
+import pandas_ta as ta
 from groq import Groq
 import plotly.graph_objects as go
 import plotly.express as px
@@ -20,6 +20,15 @@ from plotly.subplots import make_subplots
 import heapq
 import os
 from newsapi import NewsApiClient
+
+# LINE ~23 ke baad (imports ke baad) ADD KARO:
+def section_title(text):
+    st.markdown(f"""
+    <div style="display:flex;align-items:center;gap:8px;margin:1rem 0 0.6rem;">
+      <div style="width:3px;height:15px;background:#00C9A7;border-radius:2px;"></div>
+      <span style="font-size:0.72rem;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#8B90A0;">{text}</span>
+    </div>
+    """, unsafe_allow_html=True)
 
 try:
     from dotenv import load_dotenv
@@ -39,7 +48,7 @@ st.set_page_config(
 initial_sidebar_state="expanded"
 )
 
-#st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
+st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 
 # ─────────────────────────────────────────
@@ -224,8 +233,12 @@ st.sidebar.metric(
     f"{health_score}/100"
 )
 
-st.subheader("📌 Executive Portfolio Summary")
-
+st.markdown("""
+<div style="display:flex;align-items:center;gap:8px;margin:1.2rem 0 0.8rem;">
+  <div style="width:3px;height:15px;background:#00C9A7;border-radius:2px;"></div>
+  <span style="font-size:0.72rem;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#8B90A0;">📌 Executive Portfolio Summary</span>
+</div>
+""", unsafe_allow_html=True)
 risk_level = "LOW RISK"
 portfolio_grade = "A"
 main_weakness = "No major weakness detected"
@@ -247,16 +260,27 @@ elif health_score < 80:
     main_weakness = "Minor concentration risk"
     suggested_action = "Improve diversification"
 
-col1, col2 = st.columns(2)
-col3, col4 = st.columns(2)
+st.markdown(f"""
+<div style="background:#16181F;border:1px solid #252836;border-radius:14px;padding:1rem 1.2rem;margin-bottom:0.8rem;">
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.8rem;margin-bottom:0.8rem;">
+    <div style="background:#1C1F2A;border-radius:8px;padding:0.7rem 1rem;">
+      <div style="font-size:0.6rem;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#555A6E;margin-bottom:4px;">Risk Level</div>
+      <div style="font-size:1rem;font-weight:700;font-family:'JetBrains Mono',monospace;color:#F59E0B;">{risk_level}</div>
+    </div>
+    <div style="background:#1C1F2A;border-radius:8px;padding:0.7rem 1rem;">
+      <div style="font-size:0.6rem;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#555A6E;margin-bottom:4px;">Portfolio Grade</div>
+      <div style="font-size:1rem;font-weight:700;font-family:'JetBrains Mono',monospace;color:#00C9A7;">{portfolio_grade}</div>
+    </div>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.8rem;">
+    <div style="background:#0D1F3C;border:1px solid rgba(59,130,246,0.3);border-radius:8px;padding:0.6rem 1rem;font-size:0.75rem;color:#BFDBFE;">⚠️ {main_weakness}</div>
+    <div style="background:#2D2008;border:1px solid rgba(245,158,11,0.3);border-radius:8px;padding:0.6rem 1rem;font-size:0.75rem;color:#FFE0A3;">💡 {suggested_action}</div>
+  </div>
+</div>
+""", unsafe_allow_html=True)
 
-col1.metric("Risk Level", risk_level)
-col2.metric("Portfolio Grade", portfolio_grade)
-col3.info(f"Main Weakness: {main_weakness}")
-col4.warning(f"Suggested Action: {suggested_action}")
-
-st.markdown("---")
-st.subheader("🎯 AI Confidence Meter")
+section_title("---")
+section_title("🎯 AI Confidence Meter")
 
 confidence = min(95, max(50, health_score))
 
@@ -505,7 +529,6 @@ def get_news_sentiment(stock):
 
     except Exception:
         return "Neutral", 0
-
 
 
 # ─────────────────────────────────────────
