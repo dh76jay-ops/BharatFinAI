@@ -35,8 +35,7 @@ try:
 except:
     pass
 
-    api_key = os.getenv("GROQ_API_KEY")
-    st.write("API Loaded:", bool(api_key))
+    api_key = st.secrets.get("GROQ_API_KEY") or os.getenv("GROQ_API_KEY")
     
 
 st.set_page_config(
