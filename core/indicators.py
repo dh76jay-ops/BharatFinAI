@@ -3,14 +3,12 @@ import numpy as np
 
 def calc_indicators(df):
     df = df.copy()
-
     close = df["Close"]
 
-    # SMA / EMA
     df["SMA_50"] = close.rolling(window=50).mean()
+    df["SMA_200"] = close.rolling(window=200).mean()
     df["EMA_20"] = close.ewm(span=20, adjust=False).mean()
 
-    # RSI
     delta = close.diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
@@ -21,17 +19,25 @@ def calc_indicators(df):
     rs = avg_gain / avg_loss.replace(0, np.nan)
     df["RSI"] = 100 - (100 / (1 + rs))
 
-    # MACD
     ema_12 = close.ewm(span=12, adjust=False).mean()
     ema_26 = close.ewm(span=26, adjust=False).mean()
     df["MACD"] = ema_12 - ema_26
     df["MACD_SIGNAL"] = df["MACD"].ewm(span=9, adjust=False).mean()
     df["MACD_HIST"] = df["MACD"] - df["MACD_SIGNAL"]
 
-    # Bollinger Bands
+    # app_main.py compatibility
+    df["MACD_Signal"] = df["MACD_SIGNAL"]
+    df["MACD_Hist"] = df["MACD_HIST"]
+
     df["BB_MID"] = close.rolling(window=20).mean()
     bb_std = close.rolling(window=20).std()
     df["BB_UPPER"] = df["BB_MID"] + (2 * bb_std)
     df["BB_LOWER"] = df["BB_MID"] - (2 * bb_std)
+
+    # app_main.py compatibility
+    df["BB_Upper"] = df["BB_UPPER"]
+    df["BB_Lower"] = df["BB_LOWER"]
+
+    df["Vol_MA"] = df["Volume"].rolling(20).mean()
 
     return df
