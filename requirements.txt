@@ -10,4 +10,5 @@ seaborn
 textblob
 groq
 newsapi-python
+numpy
 
