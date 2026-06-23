@@ -8,3 +8,4 @@ seaborn
 textblob
 groq
 newsapi-python
+python-dotenv
