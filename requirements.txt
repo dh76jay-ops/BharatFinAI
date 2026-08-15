@@ -9,3 +9,4 @@ textblob
 groq
 newsapi-python
 python-dotenv
+pandas_ta
