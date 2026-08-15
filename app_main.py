@@ -6,8 +6,6 @@ from ai.prompts import BOOK_KNOWLEDGE
 from ui.styles import CUSTOM_CSS
 from data.feedback import save_feedback, load_feedback
 import streamlit as st
-import pandas_ta as ta
-import yfinance as yf
 import seaborn as sns
 import matplotlib.pyplot as plt
 from textblob import TextBlob
@@ -1395,8 +1393,17 @@ with tab2:
                     if df_s.empty:
                         continue
 
-                    df_s['RSI'] = ta.rsi(df_s['Close'], length=14)
-                    macd_s = ta.macd(df_s['Close'])
+                    delta = df_s['Close'].diff()
+                    gain = delta.where(delta > 0, 0).rolling(14).mean()
+                    loss = -delta.where(delta < 0, 0).rolling(14).mean()
+                    rs = gain / loss
+                    df_s['RSI'] = 100 - (100 / (1 + rs))
+
+                    ema12 = df_s['Close'].ewm(span=12, adjust=False).mean()
+                    ema26 = df_s['Close'].ewm(span=26, adjust=False).mean()
+                    macd_line = ema12 - ema26
+                    signal_line = macd_line.ewm(span=9, adjust=False).mean()
+                    macd_s = pd.DataFrame({"MACD_12_26_9": macd_line, "MACDs_12_26_9": signal_line})
                     df_s['MACD'] = macd_s['MACD_12_26_9']
                     df_s['MACD_Signal'] = macd_s['MACDs_12_26_9']
 
@@ -1707,8 +1714,11 @@ for stock in watch_df["Symbol"]:
         if len(df) < 50:
             continue
 
-        df["RSI"] = ta.rsi(df["Close"], length=14)
-
+        delta = df["Close"].diff()
+        gain = delta.where(delta > 0, 0).rolling(14).mean()
+        loss = -delta.where(delta < 0, 0).rolling(14).mean()
+        rs = gain / loss
+        df["RSI"] = 100 - (100 / (1 + rs))
         current = df["Close"].iloc[-1]
         sma50 = df["Close"].rolling(50).mean().iloc[-1]
         rsi = df["RSI"].iloc[-1]
