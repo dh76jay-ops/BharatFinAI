@@ -6,6 +6,7 @@ from ai.prompts import BOOK_KNOWLEDGE
 from ui.styles import CUSTOM_CSS
 from data.feedback import save_feedback, load_feedback
 import streamlit as st
+import pandas_ta as ta
 import yfinance as yf
 import seaborn as sns
 import matplotlib.pyplot as plt
@@ -20,7 +21,10 @@ import heapq
 import os
 from newsapi import NewsApiClient
 
-# LINE ~23 ke baad (imports ke baad) ADD KARO:
+@st.cache_data(ttl=300)
+def get_stock_data(symbol, period):
+    return yf.Ticker(symbol).history(period=period)
+
 def section_title(text):
     st.markdown(f"""
     <div style="display:flex;align-items:center;gap:8px;margin:1rem 0 0.6rem;">
@@ -53,7 +57,6 @@ st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 # SIDEBAR
 # ─────────────────────────────────────────
 with st.sidebar:
-    st.success("SIDEBAR TEST")
     st.markdown("## 📈 BharatFinAI")
     st.markdown("*Hindi AI Stock Analyzer*")
     st.divider()
@@ -852,8 +855,12 @@ with tab1:
                     st.markdown("---")
                     st.subheader("🩺 Portfolio Doctor")
 
-                    portfolio_score = max(0, min(100, int((100 - risk_level_score) + health_score/2)))
+                if 'risk_score' not in locals():
+                    risk_score = 100 - strength 
+                    st.write("Risk Score:", risk_score)
+                    st.write("Health Score:", health_score)
 
+                    portfolio_score = max(0, min(100, int((100 - risk_score) + health_score/2)))
                     st.metric("Portfolio Health Score", f"{portfolio_score}/100")
 
                     if portfolio_score >= 80:
@@ -887,6 +894,19 @@ with tab1:
 
                     with st.expander("Generate Investment Thesis"):
 
+                   # 52 Week Position
+                        try:
+                            week52_high = df['High'].tail(252).max()
+                            week52_low = df['Low'].tail(252).min()
+                            current_price = df['Close'].iloc[-1]
+                            if week52_high != week52_low:
+                                weeks52_pos = ((current_price - week52_low) / 
+                                            (week52_high - week52_low)) * 100
+                            else:
+                                weeks52_pos = 50.0
+                        except:
+                            weeks52_pos = 50.0
+
                         thesis = f"""
                         STOCK: {company}
 
@@ -909,15 +929,7 @@ with tab1:
                         Investment Thesis:
                         This stock should be evaluated based on long-term fundamentals,
                         technical momentum and risk profile.
-
-                        Verdict:
-                        {signal}
-                        """
-
-                        st.write(thesis) 
-
-                        st.markdown("---")
-                    st.subheader("🎯 AI Recommendation")
+                    """
 
                     if strength >= 80:
                         verdict = "🟢 STRONG BUY"
@@ -927,6 +939,18 @@ with tab1:
                         verdict = "🟡 HOLD"
                     else:
                         verdict = "🔴 AVOID"
+
+                    thesis += f"""
+
+                        Verdict:
+                        {verdict}
+                        """
+
+                    st.write(thesis)
+
+                    st.markdown("---")
+                    st.subheader("🎯 AI Recommendation")
+                    
 
                     st.success(f"""
                     Final Verdict: {verdict}
@@ -1364,10 +1388,9 @@ with tab2:
 
             for idx, stk in enumerate(stocks_list):
                 try:
-                    status.text(f"Analyzing {stk}...")
+                    status.text(f"⏳ Analyzing {stk}... ({idx+1}/{len(stocks_list)})")
                     sym_s = stk if stk.endswith('.NS') else stk + '.NS'
-                    ticker = yf.Ticker(sym_s)
-                    df_s = ticker.history(period=scan_period)
+                    df_s = get_stock_data(sym_s, scan_period)
 
                     if df_s.empty:
                         continue
@@ -2144,187 +2167,183 @@ with tab5:
             st.plotly_chart(fig, use_container_width=True)
 
             st.dataframe(df[["Close", "SMA20", "SMA50", "Signal", "Return", "Strategy"]].tail(20))
+with tab6:
 
-            with tab6:
+            st.markdown("## 🎲 Monte Carlo Simulation")
 
-             st.markdown("## 🎲 Monte Carlo Simulation")
-
-    mc_symbol = st.text_input(
-        "Stock Symbol",
-        value="RELIANCE",
-        key="mc_stock"
-    )
-
-    mc_period = st.selectbox(
-        "Period",
-        ["6mo", "1y", "2y", "5y"],
-        index=1,
-        key="mc_period"
-    )
-
-    simulations = st.slider(
-        "Simulations",
-        100,
-        5000,
-        1000,
-        step=100
-    )
-
-    if st.button("Run Monte Carlo"):
-
-        import numpy as np
-
-        symbol = mc_symbol.upper()
-        yf_symbol = symbol if symbol.endswith(".NS") else symbol + ".NS"
-
-        df = yf.Ticker(yf_symbol).history(period=mc_period)
-
-        if df.empty:
-            st.error("Data nahi mila")
-        else:
-
-            returns = df["Close"].pct_change().dropna()
-
-            mu = returns.mean()
-            sigma = returns.std()
-
-            start_price = df["Close"].iloc[-1]
-
-            future_days = 252
-
-            paths = np.zeros((future_days, simulations))
-
-            for i in range(simulations):
-
-                prices = [start_price]
-
-                for _ in range(future_days):
-                    shock = np.random.normal(mu, sigma)
-                    prices.append(prices[-1] * (1 + shock))
-
-                paths[:, i] = prices[1:]
-
-            fig = go.Figure()
-
-            for i in range(min(100, simulations)):
-                fig.add_trace(
-                    go.Scatter(
-                        y=paths[:, i],
-                        mode="lines",
-                        line=dict(width=1),
-                        showlegend=False
-                    )
-                )
-
-            fig.update_layout(
-                template="plotly_dark",
-                title="Monte Carlo Future Price Paths"
+            mc_symbol = st.text_input(
+                "Stock Symbol",
+                value="RELIANCE",
+                key="mc_stock"
             )
 
-            st.plotly_chart(fig, use_container_width=True)
-
-            final_prices = paths[-1]
-
-            st.metric(
-                "Expected Price",
-                f"₹{final_prices.mean():.2f}"
+            mc_period = st.selectbox(
+                "Period",
+                ["6mo", "1y", "2y", "5y"],
+                index=1,
+                key="mc_period"
             )
 
-            st.metric(
-                "Best Case",
-                f"₹{final_prices.max():.2f}"
+            simulations = st.slider(
+                "Simulations",
+                100,
+                5000,
+                1000,
+                step=100
             )
 
-            st.metric(
-                "Worst Case",
-                f"₹{final_prices.min():.2f}"
-            )
+            if st.button("Run Monte Carlo"):
 
-            with tab7:
+                import numpy as np
 
-                st.markdown("## 🛡️ Risk Engine (VaR)")
+                symbol = mc_symbol.upper()
+                yf_symbol = symbol if symbol.endswith(".NS") else symbol + ".NS"
 
-    risk_symbol = st.text_input(
-        "Stock Symbol",
-        value="RELIANCE",
-        key="risk_stock"
-    ).strip().upper()
+                df = yf.Ticker(yf_symbol).history(period=mc_period)
 
-    risk_period = st.selectbox(
-        "Period",
-        ["6mo", "1y", "2y", "5y"],
-        index=1,
-        key="risk_period"
-    )
-
-    investment = st.number_input(
-        "Investment Amount (₹)",
-        min_value=1000,
-        value=100000,
-        step=1000,
-        key="risk_investment"
-    )
-
-    if st.button("Calculate Risk", key="calculate_risk_btn"):
-        import numpy as np
-
-        clean_symbol = risk_symbol.replace(" ", "").replace("$", "")
-        yf_symbol = clean_symbol if clean_symbol.endswith(".NS") else clean_symbol + ".NS"
-
-        st.info(f"Fetching data for: {yf_symbol}")
-
-        df = yf.Ticker(yf_symbol).history(period=risk_period)
-
-        if df.empty:
-            st.error("Data nahi mila. Symbol check karo. Example: RELIANCE, TCS, INFY, SBIN")
-        else:
-            returns = df["Close"].pct_change().dropna()
-
-            if returns.empty:
-                st.error("Enough price data nahi mila risk calculate karne ke liye.")
-            else:
-                var95 = np.percentile(returns, 5)
-                var99 = np.percentile(returns, 1)
-
-                loss95 = investment * abs(var95)
-                loss99 = investment * abs(var99)
-
-                volatility = returns.std() * np.sqrt(252) * 100
-
-                cumulative = (1 + returns).cumprod()
-                rolling_max = cumulative.cummax()
-                drawdown = ((cumulative - rolling_max) / rolling_max).min() * 100
-
-                c1, c2, c3 = st.columns(3)
-
-                c1.metric("VaR 95%", f"₹{loss95:,.0f}")
-                c2.metric("VaR 99%", f"₹{loss99:,.0f}")
-                c3.metric("Volatility", f"{volatility:.2f}%")
-
-                st.metric("Maximum Drawdown", f"{drawdown:.2f}%")
-
-                if volatility < 20:
-                    risk_score = "LOW RISK 🟢"
-                elif volatility < 35:
-                    risk_score = "MEDIUM RISK 🟡"
+                if df.empty:
+                    st.error("Data nahi mila")
                 else:
-                    risk_score = "HIGH RISK 🔴"
 
-                st.success(f"Risk Classification: {risk_score}")
+                    returns = df["Close"].pct_change().dropna()
 
-                st.info(
-                    f"""
+                    mu = returns.mean()
+                    sigma = returns.std()
+
+                    start_price = df["Close"].iloc[-1]
+
+                    future_days = 252
+
+                    paths = np.zeros((future_days, simulations))
+
+                    for i in range(simulations):
+
+                        prices = [start_price]
+
+                        for _ in range(future_days):
+                            shock = np.random.normal(mu, sigma)
+                            prices.append(prices[-1] * (1 + shock))
+
+                        paths[:, i] = prices[1:]
+
+                    fig = go.Figure()
+
+                    for i in range(min(100, simulations)):
+                        fig.add_trace(
+                            go.Scatter(
+                                y=paths[:, i],
+                                mode="lines",
+                                line=dict(width=1),
+                                showlegend=False
+                            )
+                        )
+
+                    fig.update_layout(
+                        template="plotly_dark",
+                        title="Monte Carlo Future Price Paths"
+                    )
+
+                    st.plotly_chart(fig, use_container_width=True)
+
+                    final_prices = paths[-1]
+
+                    st.metric(
+                        "Expected Price",
+                        f"₹{final_prices.mean():.2f}"
+                    )
+
+                    st.metric(
+                        "Best Case",
+                        f"₹{final_prices.max():.2f}"
+                    )
+
+                    st.metric(
+                        "Worst Case",
+                        f"₹{final_prices.min():.2f}"
+                    )
+with tab7:
+
+            st.markdown("## 🛡️ Risk Engine (VaR)")
+
+            risk_symbol = st.text_input(
+                "Stock Symbol",
+                value="RELIANCE",
+                key="risk_stock"
+            ).strip().upper()
+
+            risk_period = st.selectbox(
+                "Period",
+                ["6mo", "1y", "2y", "5y"],
+                index=1,
+                key="risk_period"
+            )
+
+            investment = st.number_input(
+                "Investment Amount (₹)",
+                min_value=1000,
+                value=100000,
+                step=1000,
+                key="risk_investment"
+            )
+
+            if st.button("Calculate Risk", key="calculate_risk_btn"):
+                import numpy as np
+
+                clean_symbol = risk_symbol.replace(" ", "").replace("$", "")
+                yf_symbol = clean_symbol if clean_symbol.endswith(".NS") else clean_symbol + ".NS"
+
+                st.info(f"Fetching data for: {yf_symbol}")
+
+                df = yf.Ticker(yf_symbol).history(period=risk_period)
+
+                if df.empty:
+                    st.error("Data nahi mila. Symbol check karo. Example: RELIANCE, TCS, INFY, SBIN")
+                else:
+                    returns = df["Close"].pct_change().dropna()
+
+                    if returns.empty:
+                        st.error("Enough price data nahi mila risk calculate karne ke liye.")
+                    else:
+                        var95 = np.percentile(returns, 5)
+                        var99 = np.percentile(returns, 1)
+
+                        loss95 = investment * abs(var95)
+                        loss99 = investment * abs(var99)
+
+                        volatility = returns.std() * np.sqrt(252) * 100
+
+                        cumulative = (1 + returns).cumprod()
+                        rolling_max = cumulative.cummax()
+                        drawdown = ((cumulative - rolling_max) / rolling_max).min() * 100
+
+                        c1, c2, c3 = st.columns(3)
+
+                        c1.metric("VaR 95%", f"₹{loss95:,.0f}")
+                        c2.metric("VaR 99%", f"₹{loss99:,.0f}")
+                        c3.metric("Volatility", f"{volatility:.2f}%")
+
+                        st.metric("Maximum Drawdown", f"{drawdown:.2f}%")
+
+                        if volatility < 20:
+                            risk_score = "LOW RISK 🟢"
+                        elif volatility < 35:
+                            risk_score = "MEDIUM RISK 🟡"
+                        else:
+                            risk_score = "HIGH RISK 🔴"
+
+                        st.success(f"Risk Classification: {risk_score}")
+
+                        st.info(
+                            f"""
 ₹{investment:,.0f} investment par:
 
-• 95% confidence par ek din me approx ₹{loss95:,.0f} se jyada loss expected nahi.  
-• 99% confidence par approx ₹{loss99:,.0f} se jyada loss expected  nahi.
-                    """
-                )
+- 95% confidence par ek din me approx ₹{loss95:,.0f} se jyada loss expected nahi.  
+- 99% confidence par approx ₹{loss99:,.0f} se jyada loss expected  nahi.
+                            """
+                        )
 
             with tab8:
-                st.write("HELLO TAB8")
                 st.markdown("## 📊 Portfolio Optimizer")
-                st.subheader("🤖 AI Portfolio Advisor")
 
                 investment = st.number_input(
                     "Investment Amount (₹)",
@@ -2347,18 +2366,11 @@ with tab5:
                     value="RELIANCE,TCS,HDFCBANK,INFY,SBIN"
                 )
 
-                st.write("BEFORE BUTTON")
                 st.button("Optimize Portfolio", key="test_btn")
-            #if st.button("Optimize Portfolio, key="optimize_portfolio_btn"):
-                st.success("BUTTON CLICKED")
 
                 import numpy as np
 
                 symbols = [s.strip().upper().replace("$", "")for s in stock_input.split(",")if s.strip()]
-                st.write("Raw Input =", stock_input)
-                st.write("Symbols List =", symbols)
-                st.write("Raw Input:", stock_input)
-                st.write("Symbols:", symbols)
                 price_data = pd.DataFrame()
 
                 for sym in symbols:
@@ -2382,34 +2394,6 @@ with tab5:
 
                     corr_matrix = returns.corr()
 
-                    st.subheader("🔥 Correlation Heatmap")
-
-                    fig_corr, ax = plt.subplots(figsize=(8, 6))
-
-                    sns.heatmap(
-                        corr_matrix,
-                        annot=True,
-                        cmap="RdYlGn_r",
-                        ax=ax
-                    )
-
-                    st.pyplot(fig_corr)
-
-
-                    # High Correlation Detection
-                    max_corr = corr_matrix.where(
-                        np.triu(np.ones(corr_matrix.shape), k=1).astype(bool)
-                    ).max().max()
-
-                    if max_corr > 0.75:
-                        st.warning(
-                            "⚠ High Correlation Detected! Portfolio diversification weak hai."
-                        )
-                    else:
-                        st.success(
-                            "✅ Portfolio diversification accha hai."
-                        )
-
                     mean_returns = returns.mean() * 252
                     cov_matrix = returns.cov() * 252
 
@@ -2428,6 +2412,9 @@ with tab5:
                         max_weight = 0.50
                     else:
                         max_weight = 0.80
+
+
+                    max_weight = (max(max_weight, 1 / n) + 0.1)
 
                     for _ in range(5000):
 
@@ -2455,6 +2442,8 @@ with tab5:
                         if sharpe > best_sharpe:
                             best_sharpe = sharpe
                             best_weights = weights
+                            best_return = portfolio_return
+                            best_risk = portfolio_risk
 
                     # Efficient Frontier
 
@@ -2582,24 +2571,24 @@ with tab5:
                     except Exception as e:
                         st.warning("Correlation Heatmap unavailable.")
 
-                        st.subheader("🎯 Diversification Score")
+                    st.subheader("🎯 Diversification Score")
 
-                        avg_corr = corr_matrix.abs().mean().mean()
+                    avg_corr = corr_matrix.abs().mean().mean()
 
-                        div_score = int((1 - avg_corr) * 100)
+                    div_score = int((1 - avg_corr) * 100)
 
-                        div_score = max(0, min(100, div_score))
+                    div_score = max(0, min(100, div_score))
 
-                        st.metric("Diversification Score", f"{div_score}/100")
+                    st.metric("Diversification Score", f"{div_score}/100")
 
-                        if div_score >= 80:
-                            st.success("✅ Excellent Diversification")
-                        elif div_score >= 60:
-                            st.info("🟢 Good Diversification")
-                        elif div_score >= 40:
-                            st.warning("⚠ Moderate Diversification")
-                        else:
-                            st.error("🚨 Poor Diversification - Highly Correlated Portfolio")
+                    if div_score >= 80:
+                        st.success("✅ Excellent Diversification")
+                    elif div_score >= 60:
+                        st.info("🟢 Good Diversification")
+                    elif div_score >= 40:
+                        st.warning("⚠ Moderate Diversification")
+                    else:
+                        st.error("🚨 Poor Diversification - Highly Correlated Portfolio")
 
                     csv = result_df.to_csv(index=False)
 
@@ -2826,14 +2815,14 @@ with tab5:
                             "⚠ Portfolio risk is high. Add defensive stocks."
                         )
 
-                    sharpe_ratio = 0.84
+                    sharpe_ratio = best_sharpe
                     if sharpe_ratio < 0.5:
                         suggestions.append(
                             "📈 Consider adding ITC, HINDUNILVR, ICICIBANK for diversification."
                         )
 
-                    expected_return = 0.15
-                    if expected_return > portfolio_risk:
+                    expected_return = best_return
+                    if expected_return > best_risk:
                         suggestions.append(
                             "✅ Risk-reward profile looks healthy."
                         )
@@ -2972,64 +2961,41 @@ with tab5:
                         st.success("Portfolio risk profile looks acceptable.")
 
                     st.subheader("📈 Buy / Sell Signal Engine")
-
                     for stock in result_df["Stock"]:
-                        
-                        rsi = np.random.randint(20, 80)
-                        
+
+                        hist = yf.Ticker(f"{stock}.NS").history(period="3mo")["Close"]
+                        delta = hist.diff()
+                        gain = delta.where(delta > 0, 0).rolling(14).mean()
+                        loss = -delta.where(delta < 0, 0).rolling(14).mean()
+                        rs = gain / loss
+                        rsi = 100 - (100 / (1 + rs)).iloc[-1]
+
                         if rsi < 30:
-                            st.success(f"🟢 {stock}: BUY Signal (RSI={rsi})")
-                            
+                            st.success(f"🟢 {stock}: BUY Signal (RSI={rsi:.1f})")
+
                         elif rsi > 70:
-                            st.error(f"🔴 {stock}: SELL Signal (RSI={rsi})")
-                            
+                            st.error(f"🔴 {stock}: SELL Signal (RSI={rsi:.1f})")
+
                         else:
-                            st.info(f"🟡 {stock}: HOLD Signal (RSI={rsi})")
+                            st.info(f"🟡 {stock}: HOLD Signal (RSI={rsi:.1f})")
 
-                            st.subheader("🏆 Stock Ranking Engine")
+                    st.subheader("🏆 Stock Ranking Engine")
 
-                            ranking_df = result_df.copy()
+                    ranking_df = result_df.copy()
 
-                            ranking_df["Rank"] = ranking_df["Allocation %"].rank(
-                                ascending=False
-                            )
+                    ranking_df["Rank"] = ranking_df["Allocation %"].rank(
+                        ascending=False
+                    )
 
-                            ranking_df = ranking_df.sort_values(
-                                "Rank"
-                            )
+                    ranking_df = ranking_df.sort_values(
+                        "Rank"
+                    )
 
-                            st.dataframe(
-                                ranking_df[
-                                    ["Stock", "Allocation %", "Rank"]
-                                ],
-                                use_container_width=True
-                            )
+                    st.dataframe(
+                        ranking_df[
+                            ["Stock", "Allocation %", "Rank"]
+                        ],
+                        use_container_width=True
+                    )
 
-                            st.subheader("🏢 Sector Concentration Dashboard")
-
-                            sector_alloc = sector_df[
-                                ["Sector", "Allocation %"]
-                            ].sort_values(
-                                "Allocation %",
-                                ascending=False
-                            )
-
-                            st.dataframe(
-                                sector_alloc,
-                                use_container_width=True
-                            )
-
-                            max_sector = sector_alloc.iloc[0]
-
-                            if max_sector["Allocation %"] > 50:
-                                st.error(
-                                    f"⚠ High concentration in {max_sector['Sector']} ({max_sector['Allocation %']:.1f}%)"
-                                )
-                            elif max_sector["Allocation %"] > 35:
-                                st.warning(
-                                    f"⚠ Moderate concentration in {max_sector['Sector']} ({max_sector['Allocation %']:.1f}%)"
-                                )
-                            else:
-                                st.success("✅ Sector diversification looks healthy")
-                                                                
-
+                    
