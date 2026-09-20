@@ -18,6 +18,7 @@ from plotly.subplots import make_subplots
 import heapq
 import os
 from newsapi import NewsApiClient
+import yfinance as yf
 
 @st.cache_data(ttl=300)
 def get_stock_data(symbol, period):
@@ -157,37 +158,37 @@ if len(df_port) > 0:
     current_value = 0
     portfolio_rows = []
 
-for _, row in df_port.iterrows():
-    try:
-        stock_symbol = row["Symbol"]
-        qty = row["Quantity"]
+    for _, row in df_port.iterrows():
+        try:
+            stock_symbol = row["Symbol"]
+            qty = row["Quantity"]
 
-        yf_symbol = stock_symbol if stock_symbol.endswith(".NS") else stock_symbol + ".NS"
-        ticker = yf.Ticker(yf_symbol)
-        hist = ticker.history(period="5d")
+            yf_symbol = stock_symbol if stock_symbol.endswith(".NS") else stock_symbol + ".NS"
+            ticker = yf.Ticker(yf_symbol)
+            hist = ticker.history(period="5d")
 
-        if not hist.empty:
-            current_price = hist["Close"].iloc[-1]
-            current_value += current_price * qty
+            if not hist.empty:
+                current_price = hist["Close"].iloc[-1]
+                current_value += current_price * qty
 
-            investment = row["Quantity"] * row["BuyPrice"]
-            stock_value = current_price * qty
-            stock_pl = stock_value - investment
-            stock_pl_pct = (stock_pl / investment * 100) if investment > 0 else 0
+                investment = row["Quantity"] * row["BuyPrice"]
+                stock_value = current_price * qty
+                stock_pl = stock_value - investment
+                stock_pl_pct = (stock_pl / investment * 100) if investment > 0 else 0
 
-            portfolio_rows.append({
-                "Symbol": stock_symbol,
-                "Qty": qty,
-                "Buy Price": row["BuyPrice"],
-                "Current Price": round(current_price, 2),
-                "Investment": round(investment, 2),
-                "Current Value": round(stock_value, 2),
-                "P/L": round(stock_pl, 2),
-                "P/L %": round(stock_pl_pct, 2)
-            })
+                portfolio_rows.append({
+                    "Symbol": stock_symbol,
+                    "Qty": qty,
+                    "Buy Price": row["BuyPrice"],
+                    "Current Price": round(current_price, 2),
+                    "Investment": round(investment, 2),
+                    "Current Value": round(stock_value, 2),
+                    "P/L": round(stock_pl, 2),
+                    "P/L %": round(stock_pl_pct, 2)
+                })
 
-    except Exception as e:
-        print(e)
+        except Exception as e:
+            print(e)
 
     profit_loss = current_value - total_investment
     return_pct = (profit_loss / total_investment * 100) if total_investment > 0 else 0
@@ -196,24 +197,24 @@ for _, row in df_port.iterrows():
         st.sidebar.markdown("---")
         st.sidebar.markdown("### Portfolio Analytics")
 
-    portfolio_df = pd.DataFrame(portfolio_rows)
+        portfolio_df = pd.DataFrame(portfolio_rows)
 
-    st.sidebar.dataframe(
-        portfolio_df,
-        use_container_width=True
-    )
+        st.sidebar.dataframe(
+            portfolio_df,
+            use_container_width=True
+        )
 
-    st.sidebar.metric(
-        "Current Value",
-        f"₹{current_value:,.2f}"
-    )
+        st.sidebar.metric(
+            "Current Value",
+            f"₹{current_value:,.2f}"
+        )
 
-    st.sidebar.metric(
-    "Profit / Loss",
-    f"₹{profit_loss:,.2f}",
-    f"{return_pct:.2f}%"
-)
-
+        st.sidebar.metric(
+            "Profit / Loss",
+            f"₹{profit_loss:,.2f}",
+            f"{return_pct:.2f}%"
+        )
+        
 # Portfolio Health Score
 stock_count = len(df_port)
 diversification_score = min(stock_count * 20, 100)
@@ -1021,7 +1022,7 @@ SUMMARY
 300 words max.
 """
                     response = client.chat.completions.create(
-                        model="llama-3.3-70b-versatile",
+                        model="openai/gpt-oss-120b",
                         max_tokens=1000,
                         messages=[{"role": "user", "content": prompt}]
                     )

@@ -1,0 +1,68 @@
+# Query: risk_score
+# ContextLines: 1
+
+22 results - 3 files
+
+app_main.py:
+   854  
+   855:                 if 'risk_score' not in locals():
+   856:                     risk_score = 100 - strength 
+   857  
+   858:                     st.write("Risk Score:", risk_score)
+   859                      st.write("Health Score:", health_score)
+   860  
+   861:                     portfolio_score = max(0, min(100, int((100 - risk_score) + health_score/2)))
+   862                      st.metric("Portfolio Health Score", f"{portfolio_score}/100")
+
+  1103                              vol_risk_level = "🟢 Low Risk"
+  1104:                             vol_risk_score = 85
+  1105                          elif volatility < 5:
+  1106                              vol_risk_level = "🟡 Medium Risk"
+  1107:                             vol_risk_score = 65
+  1108                          else:
+  1109                              vol_risk_level = "🔴 High Risk"
+  1110:                             vol_risk_score = 35
+  1111  
+
+  1113  
+  1114:                         st.metric("Risk Score", f"{vol_risk_score}/100")
+  1115                          st.info(f"Risk Level: {vol_risk_level}")
+
+  1117  
+  1118:                         if vol_risk_score >= 80:
+  1119                              st.success("Capital Protection Strong Hai.")
+  1120:                         elif vol_risk_score >= 60:
+  1121                              st.warning("Moderate Risk Present Hai.")
+
+  1128  
+  1129:                         conviction_score = int((80 + fii_score + 70 + risk_score) / 4)
+  1130  
+
+  2311                  if volatility < 20:
+  2312:                     vol_risk_score = "LOW RISK 🟢"
+  2313                  elif volatility < 35:
+  2314:                     vol_risk_score = "MEDIUM RISK 🟡"
+  2315                  else:
+  2316:                     risk_tag = "HIGH RISK 🔴"
+  2317  
+  2318:                 st.success(f"Risk Classification: {risk_tag}")
+  2319  
+
+app_phase4_final.py:
+  1733              if volatility < 20:
+  1734:                 risk_score = "LOW RISK 🟢"
+  1735              elif volatility < 35:
+  1736:                 risk_score = "MEDIUM RISK 🟡"
+  1737              else:
+  1738:                 risk_score = "HIGH RISK 🔴"
+  1739  
+  1740:             st.success(f"Risk Classification: {risk_score}")
+  1741  
+
+core\trust_engine.py:
+   6  
+   7:     risk_score = 100 - week52_pos
+   8  
+   9:     trust = (rsi_score + macd_score + risk_score) / 3
+  10  
+  11:     return rsi_score, macd_score, risk_score, trust
