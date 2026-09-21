@@ -945,6 +945,32 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7  = st.tabs([
 # HELPER FUNCTIONS
 # ─────────────────────────────────────────
  
+# ─────────────────────────────────────────
+# BALANCE SHEET
+# ─────────────────────────────────────────
+
+@st.cache_data(ttl=3600)
+def get_balance_sheet(symbol):
+
+    try:
+
+        yf_symbol = symbol.upper()
+
+        if not yf_symbol.endswith(".NS"):
+            yf_symbol = yf_symbol + ".NS"
+
+        ticker = yf.Ticker(yf_symbol)
+
+        balance_sheet = ticker.balance_sheet
+
+        if balance_sheet is None or balance_sheet.empty:
+            return None
+
+        return balance_sheet
+
+    except Exception:
+        return None
+
 def get_news_sentiment(stock):
     try:
         newsapi = NewsApiClient(
@@ -1048,6 +1074,361 @@ with tab1:
                 df = calc_indicators(df)
                 latest = df.iloc[-1]
                 prev = df.iloc[-2]
+                # ─────────────────────────────────────────
+# FUNDAMENTAL METRICS
+# ─────────────────────────────────────────
+
+                try:
+                    ticker = yf.Ticker(sym)
+
+                    eps = ticker.info.get("trailingEps")
+                    pe_ratio = ticker.info.get("trailingPE")
+                    pb_ratio = ticker.info.get("priceToBook")
+                    roe = ticker.info.get("returnOnEquity")
+
+                except Exception:
+                    eps = None
+                    pe_ratio = None
+                    pb_ratio = None
+                    roe = None
+
+                # ─────────────────────────────────────────
+# ROCE CALCULATION
+# ─────────────────────────────────────────
+
+                roce = None
+
+                try:
+                    financials = ticker.financials
+                    bs = ticker.balance_sheet
+
+                    if financials is not None and not financials.empty:
+                        if bs is not None and not bs.empty:
+
+                            # EBIT / Operating Income
+                            ebit = None
+
+                            for row in ["EBIT", "Operating Income"]:
+                                if row in financials.index:
+                                    ebit = financials.loc[row].iloc[0]
+                                    break
+
+                            # Capital Employed = Total Assets - Current Liabilities
+                            total_assets = None
+                            current_liabilities = None
+
+                            if "Total Assets" in bs.index:
+                                total_assets = bs.loc["Total Assets"].iloc[0]
+
+                            if "Current Liabilities" in bs.index:
+                                current_liabilities = bs.loc["Current Liabilities"].iloc[0]
+
+                            if (
+                                ebit is not None
+                                and total_assets is not None
+                                and current_liabilities is not None
+                            ):
+                                capital_employed = total_assets - current_liabilities
+
+                                if capital_employed != 0:
+                                    roce = (ebit / capital_employed) * 100
+
+                except Exception:
+                    roce = None
+
+                # ─────────────────────────────────────────
+# FUNDAMENTAL ANALYSIS
+# ─────────────────────────────────────────
+
+                st.markdown("---")
+
+                st.markdown("""
+                <div class="bf-section">
+                    <div class="bf-section-line"></div>
+                    <div class="bf-section-title">Fundamental Analysis</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+                st.subheader("📊 Balance Sheet")
+
+                balance_sheet = get_balance_sheet(sym)
+
+                total_assets_cr = None
+                total_debt_cr = None
+                cash_cr = None
+                equity_cr = None 
+
+                if balance_sheet is not None and not balance_sheet.empty:
+
+                    # Latest 4 years
+                    bs = balance_sheet.iloc[:, :4].copy()
+
+                    # Important rows
+                    row_aliases = {
+                        "Total Assets": [
+                            "Total Assets"
+                        ],
+
+                        "Current Assets": [
+                            "Current Assets"
+                        ],
+
+                        "Cash": [
+                            "Cash Cash Equivalents And Short Term Investments",
+                            "Cash And Cash Equivalents",
+                            "Cash Financial"
+                        ],
+
+                        "Inventory": [
+                            "Inventory"
+                        ],
+
+                        "Current Liabilities": [
+                            "Current Liabilities"
+                        ],
+
+                        "Total Liabilities": [
+                            "Total Liabilities Net Minority Interest",
+                            "Total Liabilities"
+                        ],
+
+                        "Total Debt": [
+                            "Total Debt"
+                        ],
+
+                        "Shareholders Equity": [
+                            "Stockholders Equity",
+                            "Total Equity Gross Minority Interest",
+                            "Common Stock Equity"
+                        ]
+                    }
+
+                    selected_rows = {}
+
+                    for display_name, aliases in row_aliases.items():
+
+                        for alias in aliases:
+
+                            if alias in bs.index:
+                                selected_rows[display_name] = bs.loc[alias]
+                                break
+
+                    if selected_rows:
+
+                        bs_display = pd.DataFrame(selected_rows).T
+
+                        # Convert raw INR → ₹ Crore
+                        bs_display = bs_display / 1e7
+
+                        # Format column names
+                        bs_display.columns = [
+                            str(col.year) if hasattr(col, "year") else str(col)
+                            for col in bs_display.columns
+                        ]
+
+                        st.dataframe(
+                            bs_display.round(2),
+                            use_container_width=True
+                        )
+
+                    else:
+
+                        st.warning(
+                            "Balance Sheet ke required fields available nahi hain."
+                        )
+
+                        # ─────────────────────────────────────────
+# FINANCIAL HEALTH METRICS
+# ─────────────────────────────────────────
+
+                if balance_sheet is not None and not balance_sheet.empty:
+
+                    def get_bs_value(names):
+
+                        for name in names:
+
+                            if name in balance_sheet.index:
+
+                                value = balance_sheet.loc[name].iloc[0]
+
+                                if pd.notna(value):
+                                    return float(value)
+
+                        return None
+
+
+                    total_assets = get_bs_value([
+                        "Total Assets"
+                    ])
+
+                    total_debt = get_bs_value([
+                        "Total Debt"
+                    ])
+
+                    cash = get_bs_value([
+                        "Cash Cash Equivalents And Short Term Investments",
+                        "Cash And Cash Equivalents",
+                        "Cash Financial"
+                    ])
+
+                    equity = get_bs_value([
+                        "Stockholders Equity",
+                        "Total Equity Gross Minority Interest",
+                        "Common Stock Equity"
+                    ])
+
+
+                    # Convert to Crores
+
+                    if total_assets is not None:
+                        total_assets_cr = total_assets / 1e7
+                    else:
+                        total_assets_cr = None
+
+                    if total_debt is not None:
+                        total_debt_cr = total_debt / 1e7
+                    else:
+                        total_debt_cr = None
+
+                    if cash is not None:
+                        cash_cr = cash / 1e7
+                    else:
+                        cash_cr = None
+
+                    if equity is not None:
+                        equity_cr = equity / 1e7
+                    else:
+                        equity_cr = None
+
+
+                    # Cards
+
+                    c1, c2, c3, c4 = st.columns(4)
+
+                    with c1:
+
+                        if total_assets_cr is not None:
+                            st.metric(
+                                "Total Assets",
+                                f"₹{total_assets_cr:,.0f} Cr"
+                            )
+                        else:
+                            st.metric("Total Assets", "N/A")
+
+
+                    with c2:
+
+                        if total_debt_cr is not None:
+                            st.metric(
+                                "Total Debt",
+                                f"₹{total_debt_cr:,.0f} Cr"
+                            )
+                        else:
+                            st.metric("Total Debt", "N/A")
+
+
+                    with c3:
+
+                        if cash_cr is not None:
+                            st.metric(
+                                "Cash",
+                                f"₹{cash_cr:,.0f} Cr"
+                            )
+                        else:
+                            st.metric("Cash", "N/A")
+
+
+                    with c4:
+
+                        if equity_cr is not None:
+                            st.metric(
+                                "Shareholders Equity",
+                                f"₹{equity_cr:,.0f} Cr"
+                            )
+                        else:
+                            st.metric("Shareholders Equity", "N/A")
+
+                            # ─────────────────────────────────────────
+# VALUATION & PROFITABILITY METRICS
+# ─────────────────────────────────────────
+
+                st.markdown("### 📊 Fundamental Metrics")
+
+                m1, m2, m3, m4, m5 = st.columns(5)
+
+                with m1:
+                    if eps is not None:
+                        st.metric("EPS", f"₹{eps:.2f}")
+                    else:
+                        st.metric("EPS", "N/A")
+
+                with m2:
+                    if pe_ratio is not None:
+                        st.metric("P/E", f"{pe_ratio:.2f}x")
+                    else:
+                        st.metric("P/E", "N/A")
+
+                with m3:
+                    if pb_ratio is not None:
+                        st.metric("P/B", f"{pb_ratio:.2f}x")
+                    else:
+                        st.metric("P/B", "N/A")
+
+                with m4:
+                    if roe is not None:
+                        st.metric("ROE", f"{roe * 100:.2f}%")
+                    else:
+                        st.metric("ROE", "N/A")
+
+                with m5:
+                    if roce is not None:
+                        st.metric("ROCE", f"{roce:.2f}%")
+                    else:
+                        st.metric("ROCE", "N/A")
+                    
+
+                            # ─────────────────────────────────────────
+# DEBT ANALYSIS
+# ─────────────────────────────────────────
+
+                st.markdown("### 🏦 Debt Analysis")
+
+                if total_debt is not None and equity is not None and equity != 0:
+
+                    debt_equity = total_debt / equity
+
+                    st.metric(
+                        "Debt / Equity",
+                        f"{debt_equity:.2f}"
+                    )
+
+                    if debt_equity < 0.5:
+
+                        st.info(
+                            "Debt relatively low hai compared with equity."
+                        )
+
+                    elif debt_equity < 1:
+
+                        st.warning(
+                            "Debt aur equity moderate range me hain."
+                        )
+
+                    else:
+
+                        st.error(
+                            "Debt equity ke comparison me high hai."
+                        )
+
+                else:
+
+                    st.info(
+                        "Debt/Equity calculate karne ke liye sufficient data available nahi hai."
+                    )
+
+                st.warning(
+                    f"⚠️ {sym} ke liye Balance Sheet data available nahi hai."
+                )
 
                 st.markdown("---")
                 st.subheader("🏦 Institutional Smart Money Tracker")
@@ -1314,7 +1695,7 @@ with tab1:
                     st.markdown("---")
                     st.subheader("⚡ Stock Strength Meter")
 
-                    strength = int((rsi_val))
+                    strength = int((rsi_val))if pd.notna(rsi_val) else 50
 
                     st.progress(strength / 100)
 
@@ -1467,6 +1848,30 @@ with tab1:
                         sma50 = latest['SMA_50'] if pd.notna(latest['SMA_50']) else 0
                         p_vs_50 = ((latest['Close'] - sma50) / sma50 * 100) if sma50 else 0
 
+                        fund_total_assets = (
+                            f"₹{total_assets_cr:.2f} Cr"
+                            if total_assets_cr is not None
+                            else "N/A"
+                        )
+
+                        fund_total_debt = (
+                            f"₹{total_debt_cr:.2f} Cr"
+                            if total_debt_cr is not None
+                            else "N/A"
+                        )
+
+                        fund_cash = (
+                            f"₹{cash_cr:.2f} Cr"
+                            if cash_cr is not None
+                            else "N/A"
+                        )
+
+                        fund_equity = (
+                            f"₹{equity_cr:.2f} Cr"
+                            if equity_cr is not None
+                            else "N/A"
+                        )
+
                         prompt = f"""
     Tu expert Indian stock market analyst hai.
     {user_type} ko simple Hindi mein samjhao.
@@ -1481,12 +1886,45 @@ with tab1:
     52W High: Rs{df['Close'].max():.2f}
     52W Low: Rs{df['Close'].min():.2f}
 
+    FUNDAMENTAL ANALYSIS
+
+    Balance Sheet ko analyze karo:
+
+    - Total Assets: {fund_total_assets}
+    - Total Debt: {fund_total_debt}
+    - Cash: {fund_cash}
+    - Shareholders Equity: {fund_equity}
+
+    Debt level aur equity ke comparison ko explain karo.
+    Cash position ko explain karo.
+    Overall balance sheet strength ko simple Hindi mein explain karo.
+    Agar data incomplete ho to clearly "Data unavailable" bolo.
+
     Book Knowledge: {BOOK_KNOWLEDGE}
+
+    FUNDAMENTAL DATA
+
+    Total Assets:
+    {fund_total_assets}
+    Total Debt:
+    {fund_total_debt}
+    Cash: {fund_cash}
+    Shareholders Equity:
+    {fund_equity}
 
     Is format mein SIRF HINDI mein likho:
 
     TECHNICAL PICTURE
     [2-3 lines current situation]
+
+    FUNDAMENTAL PICTURE
+    [Balance Sheet ke basis par 2-3 lines analysis]
+
+    DEBT & FINANCIAL HEALTH
+    [Debt, Equity aur Cash position explain karo]
+
+    OVERALL VIEW
+    [Technical + Fundamental picture ko combine karke 2-3 lines]
 
     PSYCHOLOGY CHECK
     [FOMO, greed, fear warning]
