@@ -1012,180 +1012,6 @@ def get_news_sentiment(stock):
 
 
 # ─────────────────────────────────────────
-# NEWS + SENTIMENT ENGINE (helpers)
-# ─────────────────────────────────────────
-import re as _re
-
-_POSITIVE_TERMS = [
-    "surge", "surges", "jump", "jumps", "soar", "soars", "rally", "rallies",
-    "gain", "gains", "record profit", "beats estimates", "beat estimates",
-    "upgrade", "upgrades", "outperform", "bags order", "wins order",
-    "order win", "strong growth", "profit rises", "profit jumps", "dividend",
-    "bonus", "buyback", "expansion", "approval", "approved", "breakthrough",
-    "all-time high", "top pick", "buy rating",
-]
-
-_NEGATIVE_TERMS = [
-    "plunge", "plunges", "tumble", "tumbles", "slump", "slumps", "fall",
-    "falls", "drop", "drops", "miss estimates", "misses estimates",
-    "downgrade", "downgrades", "underperform", "probe", "fraud", "penalty",
-    "fined", "lawsuit", "default", "loss widens", "profit falls",
-    "profit drops", "resigns", "resignation", "raid", "ban", "recall",
-    "weak growth", "sell rating", "layoff", "layoffs",
-]
-
-_POS_RE = [_re.compile(r"\b" + _re.escape(t) + r"\b") for t in _POSITIVE_TERMS]
-_NEG_RE = [_re.compile(r"\b" + _re.escape(t) + r"\b") for t in _NEGATIVE_TERMS]
-
-_EVENT_RES = {
-    "📊 Earnings / Results": _re.compile(
-        r"\b(q[1-4]|quarterly results?|quarter results?|earnings|net profit|profit after tax|pat|ebitda|results)\b",
-        _re.IGNORECASE),
-    "💰 Dividend": _re.compile(r"\b(dividend|payout|record date)\b", _re.IGNORECASE),
-    "🎁 Bonus / Split": _re.compile(r"\b(bonus issue|bonus shares?|stock split|share split)\b", _re.IGNORECASE),
-    "🔄 Buyback": _re.compile(r"\b(buyback|buy-back|share repurchase)\b", _re.IGNORECASE),
-    "🤝 M&A / Deals": _re.compile(
-        r"\b(acquisition|acquires?|merger|demerger|stake sale|takeover|joint venture)\b", _re.IGNORECASE),
-    "📈 Analyst Rating": _re.compile(
-        r"\b(upgrades?|downgrades?|target price|price target|initiates coverage|buy rating|sell rating|overweight|underweight)\b",
-        _re.IGNORECASE),
-    "⚖️ Regulatory / Legal": _re.compile(
-        r"\b(sebi|penalty|fined?|probe|investigation|lawsuit|tribunal|nclt|show[- ]cause)\b", _re.IGNORECASE),
-    "👔 Management Change": _re.compile(
-        r"\b(resigns?|resignation|steps? down|appoints?|appointed|new (ceo|cfo|md|chairman))\b", _re.IGNORECASE),
-    "📦 Orders / Contracts": _re.compile(
-        r"\b(order win|bags order|wins order|secures order|order book|bags contract|wins contract)\b",
-        _re.IGNORECASE),
-    "💵 Fundraise": _re.compile(
-        r"\b(qip|rights issue|preferential (issue|allotment)|fund ?raise|ncd|ipo|fpo)\b", _re.IGNORECASE),
-}
-
-NEWS_POSITIVE_CUTOFF = 0.12
-NEWS_NEGATIVE_CUTOFF = -0.12
-
-
-def score_news_text(text):
-    """TextBlob polarity + finance keyword boost. Returns score in [-1, 1]."""
-    if not text:
-        return 0.0
-    try:
-        tb_score = TextBlob(text).sentiment.polarity
-    except Exception:
-        tb_score = 0.0
-    low = text.lower()
-    pos_hits = sum(1 for p in _POS_RE if p.search(low))
-    neg_hits = sum(1 for p in _NEG_RE if p.search(low))
-    keyword_score = max(-1.0, min(1.0, (pos_hits - neg_hits) * 0.35))
-    return 0.4 * tb_score + 0.6 * keyword_score
-
-
-def analyze_news_items(items):
-    analyzed = []
-    for it in items:
-        text = f"{it['title']}. {it.get('description', '')}"
-        score = score_news_text(text)
-        if score > NEWS_POSITIVE_CUTOFF:
-            label = "Positive"
-        elif score < NEWS_NEGATIVE_CUTOFF:
-            label = "Negative"
-        else:
-            label = "Neutral"
-        events = [name for name, pat in _EVENT_RES.items() if pat.search(text)]
-        analyzed.append({**it, "score": round(score, 2), "label": label, "events": events})
-    return analyzed
-
-
-def _normalize_news_articles(resp):
-    items = []
-    seen = set()
-    for a in (resp or {}).get("articles", []):
-        title = (a.get("title") or "").strip()
-        if not title or title == "[Removed]" or title.lower() in seen:
-            continue
-        seen.add(title.lower())
-        items.append({
-            "title": title,
-            "description": (a.get("description") or "").strip(),
-            "source": (a.get("source") or {}).get("name", ""),
-            "url": a.get("url"),
-            "published": (a.get("publishedAt") or "")[:10],
-        })
-    return items
-
-
-@st.cache_data(ttl=1800, show_spinner=False)
-def _fetch_news_cached(base_symbol):
-    # Error pe exception raise hota hai, taaki failed result cache na ho
-    client = NewsApiClient(api_key=os.getenv("NEWS_API_KEY"))
-
-    company_resp = client.get_everything(
-        q=f'"{base_symbol}" AND (stock OR shares OR NSE OR BSE OR India)',
-        language="en", sort_by="publishedAt", page_size=20
-    )
-    if company_resp.get("status") != "ok":
-        raise RuntimeError(company_resp.get("message", "NewsAPI error"))
-
-    market_articles = []
-    try:
-        market_resp = client.get_everything(
-            q="(Sensex OR Nifty) AND (market OR stocks)",
-            language="en", sort_by="publishedAt", page_size=10
-        )
-        if market_resp.get("status") == "ok":
-            market_articles = _normalize_news_articles(market_resp)
-    except Exception:
-        market_articles = []
-
-    return {"company": _normalize_news_articles(company_resp), "market": market_articles}
-
-
-def fetch_news_bundle(stock_symbol):
-    base = stock_symbol.replace(".NS", "").replace(".BO", "").upper()
-    if not os.getenv("NEWS_API_KEY"):
-        return {"company": [], "market": [], "error": "NEWS_API_KEY nahi mili (.env check karo)"}
-    try:
-        data = _fetch_news_cached(base)
-        return {"company": data["company"], "market": data["market"], "error": None}
-    except Exception as e:
-        return {"company": [], "market": [], "error": str(e)}
-
-
-@st.cache_data(ttl=1800, show_spinner=False)
-def generate_news_ai_summary(base_symbol, headlines_block, user_level):
-    api_key = os.getenv("GROQ_API_KEY")
-    if not api_key:
-        raise RuntimeError("GROQ_API_KEY nahi mili")
-
-    client = Groq(api_key=api_key)
-
-    prompt = f"""
-Tu Indian stock market ka news analyst hai. {user_level} level ke user ko simple Hinglish me samjhao.
-
-Stock: {base_symbol}
-
-Neeche recent headlines hain (sentiment aur detected events ke saath).
-SIRF in headlines ke basis pe jawab do. Koi naya fact, number ya date invent mat karo.
-Agar headlines kam ya unclear hain to seedha bolo.
-
-{headlines_block}
-
-Format:
-1. Key Takeaway (2 lines)
-2. Important Events (bullets, sirf jo headlines me hain)
-3. Investor ke liye kya dhyaan rakhna hai (2-3 bullets)
-
-Ye financial advice nahi hai. 200 words max.
-"""
-
-    response = client.chat.completions.create(
-        model="openai/gpt-oss-120b",
-        max_tokens=800,
-        messages=[{"role": "user", "content": prompt}]
-    )
-    return response.choices[0].message.content
-
-
-# ─────────────────────────────────────────
 # TAB 1: SINGLE STOCK
 # ─────────────────────────────────────────
 with tab1:
@@ -3878,7 +3704,7 @@ with tab1:
                     st.info(f"Weekly Trend: {weekly_trend}")
                     st.info(f"Monthly Trend: {monthly_trend}")
 
-                    st.subheader("📊 Signal-Based Sentiment")
+                    st.subheader("📰 News Sentiment AI")
 
                     sentiment_score = signal_score * 15
 
@@ -3889,9 +3715,8 @@ with tab1:
                     else:
                         sentiment = "🔴 Negative"
 
-                    st.metric("Signal Sentiment Score", f"{sentiment_score}/100")
+                    st.metric("News Sentiment Score", f"{sentiment_score}/100")
                     st.info(f"Market Sentiment: {sentiment}")
-                    st.caption("Ye technical signal score se nikla hai, news se nahi. Real news sentiment neeche 'News + Sentiment Engine' me hai.")
 
                     st.markdown("---")
                     st.subheader("⚡ Stock Strength Meter")
@@ -4021,7 +3846,7 @@ with tab1:
                         • RSI: {rsi_val:.1f}
                         • MACD: {'Bullish' if latest['MACD'] > latest['MACD_Signal'] else 'Bearish'}
                         • 52W Position: {weeks52_pos:.0f}%
-                        • Signal Sentiment: {sentiment}
+                        • News Sentiment: {sentiment}
                         """) 
 
                     # AI Analysis
@@ -4223,267 +4048,77 @@ with tab1:
                             mime="text/plain"
                         )
 
-                        # ─────────────────────────────────────────
-# NEWS + SENTIMENT ENGINE
-# ─────────────────────────────────────────
+                        # News Sentiment
+                        news_sentiment, news_score = get_news_sentiment(sym)
 
                         st.divider()
-                        st.markdown("### 📰 News + Sentiment Engine")
+                        st.markdown("### 📰 News Sentiment")
 
-                        st.caption(
-                            "Company + market news (NewsAPI). Sentiment: TextBlob + finance keywords, "
-                            "events: keyword detection. Headline/description level analysis hai — approximate hai, financial advice nahi."
-                        )
-
-                        nws_base = sym.replace(".NS", "").replace(".BO", "").upper()
-                        nws_bundle = fetch_news_bundle(sym)
-
-                        # Backward-compat variables (purane code ke liye)
-                        news_sentiment, news_score = "Neutral", 0
-
-                        if nws_bundle["error"]:
-
-                            st.warning(f"⚠️ News fetch nahi ho paya: {nws_bundle['error']}")
-
-                        elif not nws_bundle["company"]:
-
-                            st.info("Is stock ke liye recent news nahi mili.")
-
+                        if news_sentiment == "Positive":
+                            st.success(f"🟢 Positive News Sentiment (+{news_score})")
+                        elif news_sentiment == "Negative":
+                            st.error(f"🔴 Negative News Sentiment ({news_score})")
                         else:
+                            st.warning("🟡 Neutral News Sentiment")
 
-                            nws_company = analyze_news_items(nws_bundle["company"])
-                            nws_market = analyze_news_items(nws_bundle["market"])
+                            # AI Risk Meter
+                            st.divider()
+                            st.subheader("🛡️ AI Risk Meter")
 
-                            nws_avg = sum(a["score"] for a in nws_company) / len(nws_company)
+                            volatility = abs(latest["Close"] - latest["Open"]) / latest["Close"] * 100
 
-                            nws_pos = sum(1 for a in nws_company if a["label"] == "Positive")
-                            nws_neu = sum(1 for a in nws_company if a["label"] == "Neutral")
-                            nws_neg = sum(1 for a in nws_company if a["label"] == "Negative")
-
-                            if nws_avg > 0.10:
-                                nws_overall = "🟢 Positive"
-                                news_sentiment, news_score = "Positive", 10
-                            elif nws_avg < -0.10:
-                                nws_overall = "🔴 Negative"
-                                news_sentiment, news_score = "Negative", -10
+                            if volatility < 2:
+                                risk_level = "🟢 Low Risk"
+                                risk_score = 85
+                            elif volatility < 5:
+                                risk_level = "🟡 Medium Risk"
+                                risk_score = 65
                             else:
-                                nws_overall = "🟡 Neutral"
+                                risk_level = "🔴 High Risk"
+                                risk_score = 35
 
-                            if nws_market:
-                                nws_market_avg = sum(a["score"] for a in nws_market) / len(nws_market)
-                                if nws_market_avg > 0.10:
-                                    nws_market_mood = "🟢 Positive"
-                                elif nws_market_avg < -0.10:
-                                    nws_market_mood = "🔴 Negative"
-                                else:
-                                    nws_market_mood = "🟡 Neutral"
+                            max_downside = round(latest["Close"] * 0.90, 2)
+
+                            st.metric("Risk Score", f"{risk_score}/100")
+                            st.info(f"Risk Level: {risk_level}")
+                            st.warning(f"Maximum Downside Estimate: ₹{max_downside}")
+
+                            if risk_score >= 80:
+                                st.success("Capital Protection Strong Hai.")
+                            elif risk_score >= 60:
+                                st.warning("Moderate Risk Present Hai.")
                             else:
-                                nws_market_mood = "N/A"
+                                st.error("Risk High Hai, Position Size Kam Rakho.")
 
-                            nm1, nm2, nm3, nm4 = st.columns(4)
+                                # Hedge Fund Conviction Dashboard
+                            st.divider()
+                            st.subheader("🏦 Hedge Fund Conviction Dashboard")
 
-                            with nm1:
-                                st.metric("Company News Sentiment", nws_overall)
+                            conviction_score = int((80 + fii_score + 70 + risk_score) / 4)
 
-                            with nm2:
-                                st.metric("Avg Score (-1 to +1)", f"{nws_avg:+.2f}")
+                            if conviction_score >= 80:
+                                conviction = "🟢 HIGH CONVICTION"
+                                action = "Accumulation candidate"
+                            elif conviction_score >= 60:
+                                conviction = "🟡 MEDIUM CONVICTION"
+                                action = "Watchlist / partial position"
+                            else:
+                                conviction = "🔴 LOW CONVICTION"
+                                action = "Avoid / wait for confirmation"
 
-                            with nm3:
-                                st.metric("Pos / Neu / Neg", f"{nws_pos} / {nws_neu} / {nws_neg}")
+                            c1, c2 = st.columns(2)
 
-                            with nm4:
-                                st.metric("Market News Mood", nws_market_mood)
+                            with c1:
+                                st.metric("Conviction Score", f"{conviction_score}/100")
+                                st.info(conviction)
 
-                            if len(nws_company) < 5:
-                                st.caption(
-                                    f"⚠️ Sirf {len(nws_company)} articles mile — sample chhota hai, sentiment reliable nahi ho sakta."
-                                )
+                            with c2:
+                                st.metric("Suggested Action", action)
+                                st.warning("Use position sizing. Not financial advice.")
 
-                            nws_dist_df = pd.DataFrame({
-                                "Sentiment": ["Positive", "Neutral", "Negative"],
-                                "Articles": [nws_pos, nws_neu, nws_neg]
-                            })
-
-                            fig_nws = px.bar(
-                                nws_dist_df,
-                                x="Sentiment",
-                                y="Articles",
-                                color="Sentiment",
-                                color_discrete_map={
-                                    "Positive": "#00d68f",
-                                    "Neutral": "#f0a500",
-                                    "Negative": "#ff4d6d"
-                                },
-                                title="Company News — Sentiment Distribution"
+                            st.caption(
+                                "Based on AI Thesis, Institutional Flow, Multi-Timeframe Trend and Risk Meter."
                             )
-
-                            st.plotly_chart(
-                                fig_nws,
-                                use_container_width="stretch",
-                                key="news_sentiment_dist"
-                            )
-
-                            # ─────────────────────────────────────────
-                            # EVENT DETECTION
-                            # ─────────────────────────────────────────
-
-                            st.markdown("### 🔔 Detected Events")
-
-                            nws_event_rows = []
-
-                            for a in nws_company:
-                                for ev in a["events"]:
-                                    nws_event_rows.append({
-                                        "Event": ev,
-                                        "Sentiment": a["label"],
-                                        "Headline": a["title"],
-                                        "Source": a["source"],
-                                        "Date": a["published"],
-                                    })
-
-                            if nws_event_rows:
-
-                                nws_event_counts = {}
-
-                                for row in nws_event_rows:
-                                    nws_event_counts[row["Event"]] = nws_event_counts.get(row["Event"], 0) + 1
-
-                                st.info(
-                                    "Events mile: " + " • ".join(
-                                        f"{name} ×{count}" for name, count in nws_event_counts.items()
-                                    )
-                                )
-
-                                st.dataframe(
-                                    pd.DataFrame(nws_event_rows),
-                                    use_container_width=True,
-                                    hide_index=True
-                                )
-
-                                nws_legal_neg = [
-                                    a for a in nws_company
-                                    if "⚖️ Regulatory / Legal" in a["events"] and a["label"] == "Negative"
-                                ]
-
-                                if nws_legal_neg:
-                                    st.warning(
-                                        f"⚠️ {len(nws_legal_neg)} negative regulatory/legal headline(s) mili — "
-                                        "upar events table me details dekho."
-                                    )
-
-                            else:
-                                st.info("Recent headlines me koi major corporate event detect nahi hua.")
-
-                            # ─────────────────────────────────────────
-                            # ALL HEADLINES
-                            # ─────────────────────────────────────────
-
-                            with st.expander(f"📄 Saari headlines ({len(nws_company)})"):
-
-                                for a in nws_company:
-
-                                    nws_emoji = {"Positive": "🟢", "Negative": "🔴", "Neutral": "🟡"}[a["label"]]
-
-                                    nws_title = (
-                                        a["title"]
-                                        .replace("[", "(")
-                                        .replace("]", ")")
-                                        .replace("$", "\\$")
-                                    )
-
-                                    nws_link = f"[{nws_title}]({a['url']})" if a.get("url") else nws_title
-
-                                    st.markdown(
-                                        f"{nws_emoji} {nws_link}  \n"
-                                        f"{a['source']} · {a['published']} · score {a['score']:+.2f}"
-                                    )
-
-                            # ─────────────────────────────────────────
-                            # AI NEWS EXPLANATION (Groq, 30 min cached)
-                            # ─────────────────────────────────────────
-
-                            nws_ai_lines = []
-
-                            for a in nws_company[:12]:
-                                nws_ev_text = (
-                                    ", ".join(e.split(" ", 1)[1] for e in a["events"])
-                                    if a["events"] else "-"
-                                )
-                                nws_ai_lines.append(
-                                    f"- [{a['label']} | {nws_ev_text}] {a['title']} ({a['source']}, {a['published']})"
-                                )
-
-                            st.markdown("### 🧠 AI News Explanation")
-
-                            with st.spinner("News ka AI explanation ban raha hai..."):
-                                try:
-                                    nws_ai_text = generate_news_ai_summary(
-                                        nws_base,
-                                        "\n".join(nws_ai_lines),
-                                        user_type
-                                    )
-                                    st.markdown(nws_ai_text)
-                                except Exception as e:
-                                    st.info(f"AI explanation abhi available nahi hai ({e})")
-
-                        # AI Risk Meter
-                        st.divider()
-                        st.subheader("🛡️ AI Risk Meter")
-
-                        volatility = abs(latest["Close"] - latest["Open"]) / latest["Close"] * 100
-
-                        if volatility < 2:
-                            risk_level = "🟢 Low Risk"
-                            risk_score = 85
-                        elif volatility < 5:
-                            risk_level = "🟡 Medium Risk"
-                            risk_score = 65
-                        else:
-                            risk_level = "🔴 High Risk"
-                            risk_score = 35
-
-                        max_downside = round(latest["Close"] * 0.90, 2)
-
-                        st.metric("Risk Score", f"{risk_score}/100")
-                        st.info(f"Risk Level: {risk_level}")
-                        st.warning(f"Maximum Downside Estimate: ₹{max_downside}")
-
-                        if risk_score >= 80:
-                            st.success("Capital Protection Strong Hai.")
-                        elif risk_score >= 60:
-                            st.warning("Moderate Risk Present Hai.")
-                        else:
-                            st.error("Risk High Hai, Position Size Kam Rakho.")
-
-                            # Hedge Fund Conviction Dashboard
-                        st.divider()
-                        st.subheader("🏦 Hedge Fund Conviction Dashboard")
-
-                        conviction_score = int((80 + fii_score + 70 + risk_score) / 4)
-
-                        if conviction_score >= 80:
-                            conviction = "🟢 HIGH CONVICTION"
-                            action = "Accumulation candidate"
-                        elif conviction_score >= 60:
-                            conviction = "🟡 MEDIUM CONVICTION"
-                            action = "Watchlist / partial position"
-                        else:
-                            conviction = "🔴 LOW CONVICTION"
-                            action = "Avoid / wait for confirmation"
-
-                        c1, c2 = st.columns(2)
-
-                        with c1:
-                            st.metric("Conviction Score", f"{conviction_score}/100")
-                            st.info(conviction)
-
-                        with c2:
-                            st.metric("Suggested Action", action)
-                            st.warning("Use position sizing. Not financial advice.")
-
-                        st.caption(
-                            "Based on AI Thesis, Institutional Flow, Multi-Timeframe Trend and Risk Meter."
-                        )
 
                         # Trust Engine
                         st.divider()

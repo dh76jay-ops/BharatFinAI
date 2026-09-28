@@ -1,0 +1,3914 @@
+from data.stock_data import get_data
+from core.indicators import calc_indicators
+from core.trust_engine import get_trust_scores
+from core.signals import get_signal
+from ai.prompts import BOOK_KNOWLEDGE
+from ui.styles import CUSTOM_CSS
+from data.feedback import save_feedback, load_feedback
+import streamlit as st
+import seaborn as sns
+import matplotlib.pyplot as plt
+from textblob import TextBlob
+import pandas as pd
+import numpy as np
+from groq import Groq
+import plotly.graph_objects as go
+import plotly.express as px
+from plotly.subplots import make_subplots
+import heapq
+import os
+from newsapi import NewsApiClient
+import yfinance as yf
+
+@st.cache_data(ttl=300)
+def get_stock_data(symbol, period):
+    return yf.Ticker(symbol).history(period=period)
+
+def section_title(text):
+    st.markdown(f"""
+<div style="display:flex;align-items:center;gap:8px;margin:1rem 0 0.6rem;">
+<div style="width:3px;height:15px;background:#00C9A7;border-radius:2px;"></div>
+<span style="font-size:0.72rem;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#8B90A0;">{text}</span>
+</div>
+    """, unsafe_allow_html=True)
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv(override=True)
+except:
+    pass
+
+    api_key = st.secrets.get("GROQ_API_KEY") or os.getenv("GROQ_API_KEY")
+    
+
+st.set_page_config(
+    page_title="BharatFinAI",
+    page_icon="📈",
+    layout="wide",
+
+initial_sidebar_state="expanded"
+)
+
+#st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
+# ============================================================
+# BHARATFINAI — MINIMAL PREMIUM UI
+# ============================================================
+
+CUSTOM_CSS = """
+<style>
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+/* ================= GLOBAL ================= */
+
+html, body, [class*="css"] {
+    font-family: 'Inter', sans-serif;
+}
+
+.stApp {
+    background:
+        radial-gradient(circle at 80% 0%, rgba(255,255,255,0.025), transparent 30%),
+        #0B0D10;
+    color: #E8EAED;
+}
+
+/* Main container */
+.block-container {
+    max-width: 1450px;
+    padding-top: 2.2rem;
+    padding-bottom: 4rem;
+}
+
+/* Remove excessive Streamlit top spacing */
+[data-testid="stHeader"] {
+    background: transparent;
+}
+
+/* ================= SIDEBAR ================= */
+
+section[data-testid="stSidebar"] {
+    background: #0E1013;
+    border-right: 1px solid #1D2025;
+}
+
+section[data-testid="stSidebar"] > div {
+    padding: 1.5rem 1.15rem;
+}
+
+section[data-testid="stSidebar"] * {
+    font-family: 'Inter', sans-serif;
+}
+
+.sidebar-brand {
+    padding: 4px 4px 24px 4px;
+}
+
+.sidebar-brand .brand-name {
+    font-size: 18px;
+    font-weight: 700;
+    letter-spacing: -0.4px;
+    color: #F4F5F6;
+}
+
+.sidebar-brand .brand-sub {
+    margin-top: 5px;
+    font-size: 11px;
+    color: #858A93;
+    letter-spacing: 0.2px;
+}
+
+/* ================= HEADINGS ================= */
+
+h1, h2, h3 {
+    color: #F3F4F6 !important;
+    letter-spacing: -0.5px;
+}
+
+h1 {
+    font-weight: 700 !important;
+}
+
+h2, h3 {
+    font-weight: 600 !important;
+}
+
+p {
+    color: #9A9FA8;
+}
+
+/* ================= CARDS ================= */
+
+.bf-card {
+    background: #111419;
+    border: 1px solid #20242A;
+    border-radius: 14px;
+    padding: 20px;
+    margin-bottom: 14px;
+}
+
+.bf-card:hover {
+    border-color: #2A2F37;
+}
+
+.bf-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1.2px;
+    color: #777D87;
+    font-weight: 600;
+}
+
+.bf-value {
+    margin-top: 7px;
+    font-size: 25px;
+    font-weight: 600;
+    color: #F2F3F5;
+}
+
+.bf-muted {
+    color: #777D87;
+    font-size: 12px;
+}
+
+/* ================= METRICS ================= */
+
+[data-testid="stMetric"] {
+    background: #111419;
+    border: 1px solid #20242A;
+    border-radius: 12px;
+    padding: 16px;
+}
+
+[data-testid="stMetricLabel"] {
+    color: #7F858F !important;
+    font-size: 11px !important;
+}
+
+[data-testid="stMetricValue"] {
+    color: #F2F3F5 !important;
+    font-size: 22px !important;
+    font-weight: 600 !important;
+}
+
+[data-testid="stMetricDelta"] {
+    font-size: 12px !important;
+}
+
+/* ================= BUTTONS ================= */
+
+.stButton > button {
+    border-radius: 9px;
+    border: 1px solid #292E35;
+    background: #15181D;
+    color: #E9EBEF;
+    font-weight: 500;
+    min-height: 40px;
+    transition: all 0.15s ease;
+}
+
+.stButton > button:hover {
+    border-color: #59616D;
+    background: #1A1E24;
+    color: #FFFFFF;
+}
+
+.stButton > button[kind="primary"] {
+    background: #E8EAED;
+    color: #0B0D10;
+    border: none;
+}
+
+.stButton > button[kind="primary"]:hover {
+    background: #FFFFFF;
+}
+
+/* ================= INPUTS ================= */
+
+.stTextInput input,
+.stNumberInput input,
+.stSelectbox div[data-baseweb="select"] > div,
+.stTextArea textarea {
+    background: #111419 !important;
+    color: #E8EAED !important;
+    border: 1px solid #252A31 !important;
+    border-radius: 9px !important;
+}
+
+.stTextInput input:focus,
+.stNumberInput input:focus,
+.stTextArea textarea:focus {
+    border-color: #555D68 !important;
+    box-shadow: none !important;
+}
+
+/* ================= TABS ================= */
+
+.stTabs [data-baseweb="tab-list"] {
+    gap: 4px;
+    background: transparent;
+    border-bottom: 1px solid #20242A;
+}
+
+.stTabs [data-baseweb="tab"] {
+    background: transparent;
+    color: #777D87;
+    border-radius: 7px 7px 0 0;
+    padding: 10px 14px;
+    font-size: 12px;
+}
+
+.stTabs [data-baseweb="tab"]:hover {
+    color: #D8DBDF;
+}
+
+.stTabs [aria-selected="true"] {
+    color: #F2F3F5 !important;
+    background: #15181D;
+}
+
+/* ================= DIVIDERS ================= */
+
+hr {
+    border-color: #20242A !important;
+}
+
+/* ================= ALERTS ================= */
+
+div[data-testid="stAlert"] {
+    border-radius: 10px;
+    border: 1px solid #252A31;
+    background: #111419;
+}
+
+/* ================= PROGRESS ================= */
+
+div[data-testid="stProgressBar"] {
+    background: #20242A;
+    border-radius: 99px;
+}
+
+div[data-testid="stProgressBar"] > div {
+    border-radius: 99px;
+}
+
+/* ================= DATAFRAME ================= */
+
+[data-testid="stDataFrame"] {
+    border: 1px solid #20242A;
+    border-radius: 10px;
+    overflow: hidden;
+}
+
+/* ================= EXPANDER ================= */
+
+.streamlit-expanderHeader {
+    background: #111419 !important;
+    border: 1px solid #20242A !important;
+    border-radius: 9px !important;
+}
+
+/* ================= CAPTION ================= */
+
+.stCaption {
+    color: #6F757E !important;
+}
+
+/* ================= CUSTOM HEADER ================= */
+
+.bf-header {
+    padding: 4px 0 24px 0;
+}
+
+.bf-header-top {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.bf-logo {
+    width: 34px;
+    height: 34px;
+    border-radius: 9px;
+    background: #F1F3F5;
+    color: #0B0D10;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 14px;
+}
+
+.bf-title {
+    font-size: 26px;
+    font-weight: 700;
+    letter-spacing: -0.8px;
+    color: #F5F6F7;
+}
+
+.bf-subtitle {
+    margin-top: 7px;
+    font-size: 12px;
+    color: #777D87;
+}
+
+/* ================= SECTION LABEL ================= */
+
+.bf-section {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    margin: 22px 0 12px 0;
+}
+
+.bf-section-line {
+    width: 3px;
+    height: 17px;
+    border-radius: 5px;
+    background: #DDE1E6;
+}
+
+.bf-section-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: #C9CDD2;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+}
+
+/* ================= MOBILE ================= */
+
+@media (max-width: 768px) {
+
+    .block-container {
+        padding: 1rem;
+    }
+
+    .bf-title {
+        font-size: 22px;
+    }
+
+    [data-testid="stMetricValue"] {
+        font-size: 18px !important;
+    }
+
+}
+
+</style>
+"""
+
+st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
+
+# ─────────────────────────────────────────
+# SIDEBAR
+# ─────────────────────────────────────────
+#with st.sidebar:
+   # st.markdown("## 📈 BharatFinAI")
+    #st.markdown("*Hindi AI Stock Analyzer*")
+    #st.divider()
+    #st.markdown("**Quick Stocks:**")
+    #st.markdown("RELIANCE • TCS • HDFCBANK\nINFY • WIPRO • SBIN\nTATAMOTORS • ADANIENT\nMARUTI • SUNPHARMA")
+    #st.divider()
+    #st.markdown("**Indicators Guide:**")
+with st.sidebar:
+
+    st.markdown("""
+    <div class="sidebar-brand">
+        <div class="brand-name">BharatFinAI</div>
+        <div class="brand-sub">
+            Financial Intelligence for Indian Markets
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("")
+
+    st.markdown(
+        "<div class='bf-label'>Quick Access</div>",
+        unsafe_allow_html=True
+    )
+
+    quick_stocks = [
+        "RELIANCE",
+        "TCS",
+        "HDFCBANK",
+        "INFY",
+        "SBIN",
+        "TATAMOTORS",
+        "MARUTI",
+        "SUNPHARMA"
+    ]
+
+    for stock in quick_stocks:
+        if st.button(
+            stock,
+            key=f"quick_{stock}",
+            use_container_width=True
+        ):
+            st.session_state["watch_stock"] = stock
+
+    st.markdown("---")
+
+    st.markdown(
+        "<div class='bf-label'>Market Signals</div>",
+        unsafe_allow_html=True
+    )
+
+    st.markdown("""
+    <div style="
+        font-size:12px;
+        line-height:2;
+        color:#858A93;
+        margin-top:8px;
+    ">
+        <b style="color:#D8DBDF;">RSI</b> &nbsp; Momentum<br>
+        <b style="color:#D8DBDF;">MACD</b> &nbsp; Trend confirmation<br>
+        <b style="color:#D8DBDF;">Volume</b> &nbsp; Market participation<br>
+        <b style="color:#D8DBDF;">SMA</b> &nbsp; Trend structure
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("---")
+
+    st.caption(
+        "Educational research platform. "
+        "Always verify information independently."
+    )
+
+    WATCHLIST_FILE = "data/watchlist.csv"
+    st.markdown("🔴 RSI > 70 = Overbought\n💚 RSI < 30 = Oversold\n📈 MACD Bullish = Uptrend\n🔊 Vol > 1.5x = Strong")
+    st.divider()
+    st.caption("⚠️ Sirf educational purpose.\nInvest apni research ke baad karein.")
+
+    WATCHLIST_FILE = "data/watchlist.csv"
+
+if not os.path.exists(WATCHLIST_FILE):
+    pd.DataFrame(columns=["Symbol"]).to_csv(WATCHLIST_FILE, index=False)
+
+PORTFOLIO_FILE = "data/portfolio.csv"
+
+if not os.path.exists(PORTFOLIO_FILE):
+    pd.DataFrame(
+        columns=["Symbol", "Quantity", "BuyPrice"]
+    ).to_csv(PORTFOLIO_FILE, index=False)
+
+# Portfolio File
+PORTFOLIO_FILE = "data/portfolio.csv"
+
+# Portfolio Section
+st.sidebar.divider()
+
+st.sidebar.subheader("💼 Portfolio")
+
+p_symbol = st.sidebar.text_input("Portfolio Stock", key="portfolio_stock")
+
+p_qty = st.sidebar.number_input(
+    "Quantity",
+    min_value=1,
+    step=1
+)
+
+p_buy = st.sidebar.number_input(
+    "Buy Price",
+    min_value=0.0,
+    step=1.0
+)
+
+st.sidebar.markdown("---")
+
+sell_symbol = st.sidebar.text_input(
+    "Sell Stock",
+    key="sell_stock"
+)
+
+if st.sidebar.button("Sell Stock"):
+    df_port = pd.read_csv(PORTFOLIO_FILE)
+
+    df_port = df_port[
+        df_port["Symbol"] != sell_symbol.upper()
+    ]
+
+    df_port.to_csv(PORTFOLIO_FILE, index=False)
+
+    st.sidebar.success(
+        f"{sell_symbol.upper()} Sold!"
+    )
+
+if st.sidebar.button("Add To Portfolio"):
+
+    df_port = pd.read_csv(PORTFOLIO_FILE)
+
+    df_port.loc[len(df_port)] = [
+        p_symbol.upper(),
+        p_qty,
+        p_buy
+    ]
+
+    df_port.to_csv(PORTFOLIO_FILE, index=False)
+
+
+
+
+
+    st.sidebar.success("Portfolio Updated!")
+    st.sidebar.markdown("### 📊 Current Portfolio")
+
+df_port = pd.read_csv(PORTFOLIO_FILE)
+
+if len(df_port) > 0:
+    st.sidebar.dataframe(df_port, use_container_width=True)
+    # Portfolio Summary
+
+    total_investment = (df_port["Quantity"] * df_port["BuyPrice"]).sum()
+
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### 📈 Portfolio Summary")
+
+    st.sidebar.metric(
+        "Total Investment",
+        f"₹{total_investment:,.2f}"
+    )
+    current_value = 0
+    portfolio_rows = []
+
+    for _, row in df_port.iterrows():
+        try:
+            stock_symbol = row["Symbol"]
+            qty = row["Quantity"]
+
+            yf_symbol = stock_symbol if stock_symbol.endswith(".NS") else stock_symbol + ".NS"
+            ticker = yf.Ticker(yf_symbol)
+            hist = ticker.history(period="5d")
+
+            if not hist.empty:
+                current_price = hist["Close"].iloc[-1]
+                current_value += current_price * qty
+
+                investment = row["Quantity"] * row["BuyPrice"]
+                stock_value = current_price * qty
+                stock_pl = stock_value - investment
+                stock_pl_pct = (stock_pl / investment * 100) if investment > 0 else 0
+
+                portfolio_rows.append({
+                    "Symbol": stock_symbol,
+                    "Qty": qty,
+                    "Buy Price": row["BuyPrice"],
+                    "Current Price": round(current_price, 2),
+                    "Investment": round(investment, 2),
+                    "Current Value": round(stock_value, 2),
+                    "P/L": round(stock_pl, 2),
+                    "P/L %": round(stock_pl_pct, 2)
+                })
+
+        except Exception as e:
+            print(e)
+
+    profit_loss = current_value - total_investment
+    return_pct = (profit_loss / total_investment * 100) if total_investment > 0 else 0
+
+    if portfolio_rows:
+        st.sidebar.markdown("---")
+        st.sidebar.markdown("### Portfolio Analytics")
+
+        portfolio_df = pd.DataFrame(portfolio_rows)
+
+        st.sidebar.dataframe(
+            portfolio_df,
+            use_container_width=True
+        )
+
+        st.sidebar.metric(
+            "Current Value",
+            f"₹{current_value:,.2f}"
+        )
+
+        st.sidebar.metric(
+            "Profit / Loss",
+            f"₹{profit_loss:,.2f}",
+            f"{return_pct:.2f}%"
+        )
+        
+# Portfolio Health Score
+stock_count = len(df_port)
+diversification_score = min(stock_count * 20, 100)
+
+return_pct = float(return_pct) if "return_pct" in locals() else 0
+
+profit_score = 100 if return_pct > 10 else 75 if return_pct > 0 else 50 if return_pct > -10 else 25
+
+health_score = int((diversification_score * 0.4) + (profit_score * 0.6))
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 🧠 Portfolio Health Score")
+
+st.sidebar.metric(
+    "Health Score",
+    f"{health_score}/100"
+)
+
+with st.sidebar:
+    st.markdown("""
+    <div style="display:flex;align-items:center;gap:8px;margin:1.2rem 0 0.8rem;">
+      <div style="width:3px;height:15px;background:#00C9A7;border-radius:2px;"></div>
+      <span style="font-size:0.72rem;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#8B90A0;">📌 Executive Portfolio Summary</span>
+    </div>
+    """, unsafe_allow_html=True)
+    risk_level = "LOW RISK"
+    portfolio_grade = "A"
+    main_weakness = "No major weakness detected"
+    suggested_action = "Portfolio looks stable"
+
+    if health_score < 40:
+        risk_level = "HIGH RISK"
+        portfolio_grade = "D"
+        main_weakness = "High risk compared to expected return"
+        suggested_action = "Immediate rebalancing required"
+    elif health_score < 60:
+        risk_level = "MEDIUM RISK"
+        portfolio_grade = "C"
+        main_weakness = "Portfolio needs optimization"
+        suggested_action = "Reduce risky exposure"
+    elif health_score < 80:
+        risk_level = "LOW-MEDIUM RISK"
+        portfolio_grade = "B"
+        main_weakness = "Minor concentration risk"
+        suggested_action = "Improve diversification"
+
+    st.markdown(f"""
+    <div style="background:#16181F;border:1px solid #252836;border-radius:14px;padding:1rem 1.2rem;margin-bottom:0.8rem;">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.8rem;margin-bottom:0.8rem;">
+        <div style="background:#1C1F2A;border-radius:8px;padding:0.7rem 1rem;">
+          <div style="font-size:0.6rem;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#555A6E;margin-bottom:4px;">Risk Level</div>
+          <div style="font-size:1rem;font-weight:700;font-family:'JetBrains Mono',monospace;color:#F59E0B;">{risk_level}</div>
+        </div>
+        <div style="background:#1C1F2A;border-radius:8px;padding:0.7rem 1rem;">
+          <div style="font-size:0.6rem;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#555A6E;margin-bottom:4px;">Portfolio Grade</div>
+          <div style="font-size:1rem;font-weight:700;font-family:'JetBrains Mono',monospace;color:#00C9A7;">{portfolio_grade}</div>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.8rem;">
+        <div style="background:#0D1F3C;border:1px solid rgba(59,130,246,0.3);border-radius:8px;padding:0.6rem 1rem;font-size:0.75rem;color:#BFDBFE;">⚠️ {main_weakness}</div>
+        <div style="background:#2D2008;border:1px solid rgba(245,158,11,0.3);border-radius:8px;padding:0.6rem 1rem;font-size:0.75rem;color:#FFE0A3;">💡 {suggested_action}</div>
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    section_title("---")
+    section_title("🎯 AI Confidence Meter")
+
+    confidence = min(95, max(50, health_score))
+
+    st.progress(confidence / 100)
+
+    st.metric(
+        "AI Confidence",
+        f"{confidence}%"
+    )
+
+    if confidence >= 80:
+        st.success("🟢 High Confidence")
+    elif confidence >= 60:
+        st.warning("🟡 Medium Confidence")
+    else:
+        st.error("🔴 Low Confidence")
+
+st.sidebar.progress(health_score / 100)
+
+if health_score >= 75:
+    st.sidebar.success("Strong Portfolio ✅")
+elif health_score >= 50:
+    st.sidebar.warning("Average Portfolio ⚠️")
+else:
+    st.sidebar.error("Weak Portfolio 🚨")
+
+st.sidebar.caption(
+    f"Stocks: {stock_count} | Diversification Score: {diversification_score}/100"
+)
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("### ⚠️ Risk Meter")
+
+if diversification_score < 40:
+    risk_level = "HIGH RISK 🔴"
+elif diversification_score < 70:
+    risk_level = "MEDIUM RISK 🟡"
+else:
+    risk_level = "LOW RISK 🟢"
+
+st.sidebar.metric("Risk Level", risk_level)
+
+# AI Portfolio Suggestion
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 🤖 AI Portfolio Suggestion")
+
+if stock_count == 1:
+    st.sidebar.warning("Only 1 stock hai. Diversification low hai.")
+    st.sidebar.info("Suggestion: 3-5 alag sector ke stocks add karo.")
+
+elif stock_count < 4:
+    st.sidebar.warning("Portfolio thoda concentrated hai.")
+    st.sidebar.info("Suggestion: Banking, IT, FMCG, Auto jaise sectors mix karo.")
+
+else:
+    st.sidebar.success("Diversification better lag rahi hai.")
+
+if return_pct < -10:
+    st.sidebar.error("Portfolio loss high hai. Risk review karo.")
+elif return_pct < 0:
+    st.sidebar.warning("Portfolio negative hai. Panic sell mat karo, analysis check karo.")
+elif return_pct > 10:
+    st.sidebar.success("Portfolio profitable hai. Partial profit booking consider kar sakte ho.")
+else:
+    st.sidebar.info("Portfolio stable zone me hai.")
+    
+profit_loss = 0
+
+st.sidebar.metric(
+        "Profit / Loss",
+        f"₹{profit_loss:,.2f}",
+        f"{return_pct:.2f}%"
+    )
+#     # Portfolio Allocation Chart
+
+# fig_pie = go.Figure(
+#     data=[
+#         go.Pie(
+#             labels=df_port["Symbol"],
+#             values=df_port["Quantity"] * df_port["BuyPrice"],
+#             hole=0.45
+#         )
+#     ]
+# )
+
+# fig_pie.update_layout(
+#     title="Portfolio Allocation",
+#     height=300,
+#     template="plotly_dark"
+# )
+
+
+            
+#else:
+ #   st.sidebar.info("No stocks added")
+
+new_stock = st.sidebar.text_input("Add Stock Symbol", key="watchlist_stock_input")
+
+if st.sidebar.button("Add To Watchlist"):
+    df_watch = pd.read_csv(WATCHLIST_FILE)
+
+    if new_stock.upper() not in df_watch["Symbol"].values:
+        df_watch.loc[len(df_watch)] = [new_stock.upper()]
+        df_watch.to_csv(WATCHLIST_FILE, index=False)
+        st.sidebar.success("Added!")
+
+if "watch_stock" in st.session_state:
+    default_stock = st.session_state["watch_stock"]
+else:
+    default_stock = "RELIANCE"
+
+df_watch = pd.read_csv(WATCHLIST_FILE)
+
+st.sidebar.markdown("### My Watchlist")
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 📈 Watchlist Live Prices")
+
+for stock in df_watch["Symbol"]:
+    try:
+        yf_symbol = stock if stock.endswith(".NS") else stock + ".NS"
+        hist = yf.Ticker(yf_symbol).history(period="1d")
+
+        if not hist.empty:
+            price = hist["Close"].iloc[-1]
+            st.sidebar.metric(stock, f"₹{price:,.2f}")
+        else:
+            st.sidebar.warning(f"{stock} data nahi mila")
+
+    except:
+        st.sidebar.warning(f"{stock} error")
+
+for stock in df_watch["Symbol"]:
+
+    col1, col2, col3 = st.sidebar.columns([3, 1, 1])
+
+    with col1:
+        st.write(f"📈 {stock}")
+
+    with col2:
+        if st.button("Go", key=f"go_{stock}"):
+            st.session_state["watch_stock"] = stock
+
+    with col3:
+        if st.button("❌", key=f"remove_{stock}"):
+            df_watch = df_watch[df_watch["Symbol"] != stock]
+            df_watch.to_csv(WATCHLIST_FILE, index=False)
+            st.sidebar.success(f"{stock} removed")
+            st.rerun()
+
+with st.sidebar:
+    st.markdown("### 📊 Feedback Records")
+
+    feedback_df = load_feedback()
+
+    if not feedback_df.empty:
+
+        st.dataframe(
+
+
+            feedback_df,
+            use_container_width=True,
+            hide_index=True
+        )
+
+        feedback_csv = feedback_df.to_csv(index=False).encode("utf-8")
+
+        st.download_button(
+            "📥 Feedback CSV Download",
+            feedback_csv,
+            "bharatfinai_feedback.csv",
+            "text/csv"
+        )
+
+    else:
+        st.info("Abhi koi feedback nahi mila.")
+
+    st.markdown("### 💬 Feedback Section")
+    st.caption("Aapka feedback BharatFinAI ko better banane me help karega.")
+
+    name = st.text_input("Naam")
+    city = st.text_input("City")
+
+    user_type_fb = st.selectbox(
+        "Aapka level",
+        ["Beginner", "Student", "Investor", "Trader", "Other"]
+    )
+
+    rating = st.slider("Rating", 1, 5, 4)
+
+    confusion = st.text_area("Kya confusing laga?")
+
+    suggestion = st.text_area("Kya improve karna chahiye?")
+
+    if st.button("✅ Feedback Submit"):
+
+        save_feedback(
+            name,
+            city,
+            user_type_fb,
+            rating,
+            confusion,
+            suggestion
+        )
+
+        st.success("Thank you! Feedback save ho gaya ✅")   
+st.markdown("""
+<div class="bf-header">
+
+<div class="bf-header-top">
+
+<div class="bf-logo">
+BF
+</div>
+
+<div class="bf-title">
+BharatFinAI
+</div>
+
+</div>
+
+<div class="bf-subtitle">
+AI-powered financial intelligence for Indian markets
+&nbsp;·&nbsp;
+NSE / BSE
+&nbsp;·&nbsp;
+Research
+&nbsp;·&nbsp;
+Risk
+</div>
+
+</div>
+""", unsafe_allow_html=True)
+
+# ─────────────────────────────────────────
+# TABS
+# ─────────────────────────────────────────
+tab1, tab2, tab3, tab4, tab5, tab6, tab7  = st.tabs([
+    "Stock Analysis",
+    "Market Scanner",
+    " AI Comparison",
+    "Quant",
+    "Monte Carlo",
+    "Risk",
+    "Portfolio"  
+])
+
+
+# ─────────────────────────────────────────
+# HELPER FUNCTIONS
+# ─────────────────────────────────────────
+ 
+# ─────────────────────────────────────────
+# BALANCE SHEET
+# ─────────────────────────────────────────
+
+@st.cache_data(ttl=3600)
+def get_balance_sheet(symbol):
+
+    try:
+
+        yf_symbol = symbol.upper()
+
+        if not yf_symbol.endswith(".NS"):
+            yf_symbol = yf_symbol + ".NS"
+
+        ticker = yf.Ticker(yf_symbol)
+
+        balance_sheet = ticker.balance_sheet
+
+        if balance_sheet is None or balance_sheet.empty:
+            return None
+
+        return balance_sheet
+
+    except Exception:
+        return None
+
+def get_news_sentiment(stock):
+    try:
+        newsapi = NewsApiClient(
+            api_key=os.getenv("NEWS_API_KEY")
+        )
+
+        news = newsapi.get_everything(
+            q=stock,
+            language="en",
+            sort_by="publishedAt",
+            page_size=10
+        )
+
+        headlines = [
+            article["title"]
+            for article in news["articles"]
+            if article.get("title")
+        ]
+
+        if not headlines:
+            return "Neutral", 0
+
+        total = 0
+
+        for headline in headlines:
+            total += TextBlob(headline).sentiment.polarity
+
+        avg = total / len(headlines)
+
+        if avg > 0.1:
+            return "Positive", 10
+        elif avg < -0.1:
+            return "Negative", -10
+        else:
+            return "Neutral", 0
+
+    except Exception:
+        return "Neutral", 0
+
+
+# ─────────────────────────────────────────
+# TAB 1: SINGLE STOCK
+# ─────────────────────────────────────────
+with tab1:
+    st.markdown("""
+<div class="bf-section">
+    <div class="bf-section-line"></div>
+    <div class="bf-section-title">Market Research</div>
+</div>
+""", unsafe_allow_html=True)
+
+    c1, c2, c3 = st.columns([3.2, 1.4, 1.4])
+
+    with c1:
+        symbol = st.text_input(
+            "Stock",
+            value=default_stock,
+            placeholder="Search NSE stock...",
+            label_visibility="collapsed",
+            key="single"
+        )
+
+    with c2:
+        user_type = st.selectbox(
+            "Investor profile",
+            ["College Student", "Beginner", "Experienced"],
+            label_visibility="collapsed"
+        )
+
+    with c3:
+        period = st.selectbox(
+            "Period",
+            ["3mo", "6mo", "1y"],
+            index=1,
+            label_visibility="collapsed"
+        )
+
+    st.markdown("")
+
+    if st.button(
+        "Analyze Stock",
+        key="single_btn",
+        type="primary",
+        use_container_width="content"
+    ):
+
+            if not symbol:
+                st.warning("⚠️ Stock symbol daalo!")
+            else:
+                with st.spinner("📡 Data fetch ho raha hai..."):
+                    try:
+                        df, info, sym = get_data(symbol, period)
+                        if df.empty:
+                            st.error("❌ Data nahi mila! Try: RELIANCE, TCS, HDFCBANK")
+                            st.stop()
+                        st.success(f"✅ {sym} — {len(df)} days data!")
+                    except Exception as e:
+                        st.error(f"❌ Error: {e}")
+                        st.stop()
+
+                df = calc_indicators(df)
+                latest = df.iloc[-1]
+                prev = df.iloc[-2]
+                # ─────────────────────────────────────────
+# FUNDAMENTAL METRICS
+# ─────────────────────────────────────────
+
+            try:
+                ticker = yf.Ticker(sym)
+
+                eps = ticker.info.get("trailingEps")
+                pe_ratio = ticker.info.get("trailingPE")
+                pb_ratio = ticker.info.get("priceToBook")
+                roe = ticker.info.get("returnOnEquity")
+
+            except Exception:
+                eps = None
+                pe_ratio = None
+                pb_ratio = None
+                roe = None
+
+                # ─────────────────────────────────────────
+# ROCE CALCULATION
+# ─────────────────────────────────────────
+
+            roce = None
+
+            try:
+                financials = ticker.financials
+                bs = ticker.balance_sheet
+
+                if financials is not None and not financials.empty:
+                    if bs is not None and not bs.empty:
+
+                        # EBIT / Operating Income
+                        ebit = None
+
+                        for row in ["EBIT", "Operating Income"]:
+                            if row in financials.index:
+                                ebit = financials.loc[row].iloc[0]
+                                break
+
+                        # Capital Employed = Total Assets - Current Liabilities
+                        total_assets = None
+                        current_liabilities = None
+
+                        if "Total Assets" in bs.index:
+                            total_assets = bs.loc["Total Assets"].iloc[0]
+
+                        if "Current Liabilities" in bs.index:
+                            current_liabilities = bs.loc["Current Liabilities"].iloc[0]
+
+                        if (
+                            ebit is not None
+                            and total_assets is not None
+                            and current_liabilities is not None
+                        ):
+                            capital_employed = total_assets - current_liabilities
+
+                            if capital_employed != 0:
+                                roce = (ebit / capital_employed) * 100
+
+            except Exception:
+                roce = None
+
+                # ─────────────────────────────────────────
+# FUNDAMENTAL ANALYSIS
+# ─────────────────────────────────────────
+
+                st.markdown("---")
+
+                st.markdown("""
+                <div class="bf-section">
+                    <div class="bf-section-line"></div>
+                    <div class="bf-section-title">Fundamental Analysis</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+                st.subheader("📊 Balance Sheet")
+
+                balance_sheet = get_balance_sheet(sym)
+
+                total_assets_cr = None
+                total_debt_cr = None
+                cash_cr = None
+                equity_cr = None 
+
+                if balance_sheet is not None and not balance_sheet.empty:
+
+                    # Latest 4 years
+                    bs = balance_sheet.iloc[:, :4].copy()
+
+                    # Important rows
+                    row_aliases = {
+                        "Total Assets": [
+                            "Total Assets"
+                        ],
+
+                        "Current Assets": [
+                            "Current Assets"
+                        ],
+
+                        "Cash": [
+                            "Cash Cash Equivalents And Short Term Investments",
+                            "Cash And Cash Equivalents",
+                            "Cash Financial"
+                        ],
+
+                        "Inventory": [
+                            "Inventory"
+                        ],
+
+                        "Current Liabilities": [
+                            "Current Liabilities"
+                        ],
+
+                        "Total Liabilities": [
+                            "Total Liabilities Net Minority Interest",
+                            "Total Liabilities"
+                        ],
+
+                        "Total Debt": [
+                            "Total Debt"
+                        ],
+
+                        "Shareholders Equity": [
+                            "Stockholders Equity",
+                            "Total Equity Gross Minority Interest",
+                            "Common Stock Equity"
+                        ]
+                    }
+
+                    selected_rows = {}
+
+                    for display_name, aliases in row_aliases.items():
+
+                        for alias in aliases:
+
+                            if alias in bs.index:
+                                selected_rows[display_name] = bs.loc[alias]
+                                break
+
+                    if selected_rows:
+
+                        bs_display = pd.DataFrame(selected_rows).T
+
+                        # Convert raw INR → ₹ Crore
+                        bs_display = bs_display / 1e7
+
+                        # Format column names
+                        bs_display.columns = [
+                            str(col.year) if hasattr(col, "year") else str(col)
+                            for col in bs_display.columns
+                        ]
+
+                        st.dataframe(
+                            bs_display.round(2),
+                            use_container_width=True
+                        )
+
+                    else:
+
+                        st.warning(
+                            "Balance Sheet ke required fields available nahi hain."
+                        )
+
+                        # ─────────────────────────────────────────
+# FINANCIAL HEALTH METRICS
+# ─────────────────────────────────────────
+
+                if balance_sheet is not None and not balance_sheet.empty:
+
+                    def get_bs_value(names):
+
+                        for name in names:
+
+                            if name in balance_sheet.index:
+
+                                value = balance_sheet.loc[name].iloc[0]
+
+                                if pd.notna(value):
+                                    return float(value)
+
+                        return None
+
+
+                    total_assets = get_bs_value([
+                        "Total Assets"
+                    ])
+
+                    total_debt = get_bs_value([
+                        "Total Debt"
+                    ])
+
+                    cash = get_bs_value([
+                        "Cash Cash Equivalents And Short Term Investments",
+                        "Cash And Cash Equivalents",
+                        "Cash Financial"
+                    ])
+
+                    equity = get_bs_value([
+                        "Stockholders Equity",
+                        "Total Equity Gross Minority Interest",
+                        "Common Stock Equity"
+                    ])
+
+
+                    # Convert to Crores
+
+                    if total_assets is not None:
+                        total_assets_cr = total_assets / 1e7
+                    else:
+                        total_assets_cr = None
+
+                    if total_debt is not None:
+                        total_debt_cr = total_debt / 1e7
+                    else:
+                        total_debt_cr = None
+
+                    if cash is not None:
+                        cash_cr = cash / 1e7
+                    else:
+                        cash_cr = None
+
+                    if equity is not None:
+                        equity_cr = equity / 1e7
+                    else:
+                        equity_cr = None
+
+
+                    # Cards
+
+                    c1, c2, c3, c4 = st.columns(4)
+
+                    with c1:
+
+                        if total_assets_cr is not None:
+                            st.metric(
+                                "Total Assets",
+                                f"₹{total_assets_cr:,.0f} Cr"
+                            )
+                        else:
+                            st.metric("Total Assets", "N/A")
+
+
+                    with c2:
+
+                        if total_debt_cr is not None:
+                            st.metric(
+                                "Total Debt",
+                                f"₹{total_debt_cr:,.0f} Cr"
+                            )
+                        else:
+                            st.metric("Total Debt", "N/A")
+
+
+                    with c3:
+
+                        if cash_cr is not None:
+                            st.metric(
+                                "Cash",
+                                f"₹{cash_cr:,.0f} Cr"
+                            )
+                        else:
+                            st.metric("Cash", "N/A")
+
+
+                    with c4:
+
+                        if equity_cr is not None:
+                            st.metric(
+                                "Shareholders Equity",
+                                f"₹{equity_cr:,.0f} Cr"
+                            )
+                        else:
+                            st.metric("Shareholders Equity", "N/A")
+
+                            # ─────────────────────────────────────────
+# VALUATION & PROFITABILITY METRICS
+# ─────────────────────────────────────────
+
+            st.markdown("### 📊 Fundamental Metrics")
+
+            m1, m2, m3, m4, m5 = st.columns(5)
+
+            with m1:
+                if eps is not None:
+                    st.metric("EPS", f"₹{eps:.2f}")
+                else:
+                    st.metric("EPS", "N/A")
+
+            with m2:
+                if pe_ratio is not None:
+                    st.metric("P/E", f"{pe_ratio:.2f}x")
+                else:
+                    st.metric("P/E", "N/A")
+
+            with m3:
+                if pb_ratio is not None:
+                    st.metric("P/B", f"{pb_ratio:.2f}x")
+                else:
+                    st.metric("P/B", "N/A")
+
+            with m4:
+                if roe is not None:
+                    st.metric("ROE", f"{roe * 100:.2f}%")
+                else:
+                    st.metric("ROE", "N/A")
+
+            with m5:
+                if roce is not None:
+                    st.metric("ROCE", f"{roce:.2f}%")
+                else:
+                    st.metric("ROCE", "N/A")
+                    
+
+                            # ─────────────────────────────────────────
+# DEBT ANALYSIS
+# ─────────────────────────────────────────
+
+                    st.markdown("### 🏦 Debt Analysis")
+
+                    if total_debt is not None and equity is not None and equity != 0:
+
+                        debt_equity = total_debt / equity
+
+                        st.metric(
+                            "Debt / Equity",
+                            f"{debt_equity:.2f}"
+                        )
+
+                        if debt_equity < 0.5:
+
+                            st.info(
+                                "Debt relatively low hai compared with equity."
+                            )
+
+                        elif debt_equity < 1:
+
+                            st.warning(
+                                "Debt aur equity moderate range me hain."
+                            )
+
+                        else:
+
+                            st.error(
+                                "Debt equity ke comparison me high hai."
+                            )
+
+                    else:
+
+                        st.info(
+                            "Debt/Equity calculate karne ke liye sufficient data available nahi hai."
+                        )
+
+                    st.warning(
+                        f"⚠️ {sym} ke liye Balance Sheet data available nahi hai."
+                    )
+
+                st.markdown("---")
+                st.subheader("🏦 Institutional Smart Money Tracker")
+
+                smart_money_score = 50
+
+                avg_volume = df["Volume"].tail(30).mean()
+                latest_volume = latest["Volume"]
+
+                if latest_volume > avg_volume * 1.5:
+                    smart_money_score += 25
+                    smart_signal = "Strong Institutional Buying"
+                elif latest_volume > avg_volume:
+                    smart_money_score += 10
+                    smart_signal = "Moderate Institutional Activity"
+                else:
+                    smart_money_score -= 10
+                    smart_signal = "Weak Institutional Interest"
+
+                st.metric("Smart Money Score", f"{smart_money_score}/100")
+                st.progress(smart_money_score / 100)
+                st.info(f"Signal: {smart_signal}")
+
+                change = ((latest['Close'] - prev['Close']) / prev['Close']) * 100
+                avg_vol = df["Volume"].tail(20).mean()
+
+                if avg_vol > 0:
+                    vol_ratio = latest["Volume"] / avg_vol
+                else:
+                    vol_ratio = 1
+                week52_pos = ((latest['Close'] - df['Close'].min()) /
+                            (df['Close'].max() - df['Close'].min()) * 100)
+                rsi_val = latest['RSI']
+                company = info.get('longName', sym) if info else sym
+
+                # AI Buy / Hold / Sell Signal
+                signal_score = 0
+
+                if rsi_val < 35:
+                    signal_score += 2
+                elif rsi_val < 60:
+                    signal_score += 1
+
+                if latest["MACD"] > latest["MACD_Signal"]:
+                    signal_score += 2
+
+                if vol_ratio > 1.2:
+                    signal_score += 1
+
+                if week52_pos < 40:
+                    signal_score += 1
+
+                if signal_score >= 5:
+                    ai_signal = "BUY 🟢"
+                    signal_confidence = 85
+                elif signal_score >= 3:
+                    ai_signal = "HOLD 🟡"
+                    signal_confidence = 65
+                else:
+                    ai_signal = "AVOID / SELL 🔴"
+                    signal_confidence = 45
+
+                st.markdown("### 🤖 AI Buy / Hold / Sell Signal")
+                st.metric("AI Signal", ai_signal)
+                st.progress(signal_confidence / 100)
+                st.caption(f"Confidence: {signal_confidence}% | Score: {signal_score}/6")
+
+                st.markdown(f"### {company}")
+
+                st.markdown("### Research Notes")
+
+                reasons = []
+
+                if rsi_val < 35:
+                    reasons.append("RSI low hai, stock oversold zone me hai.")
+
+                if latest["MACD"] > latest["MACD_Signal"]:
+                    reasons.append("MACD bullish crossover dikh raha hai.")
+
+                if vol_ratio > 1.2:
+                    reasons.append("Volume strong hai.")
+
+                if week52_pos < 40:
+                    reasons.append("52 week range ke lower zone me trade kar raha hai.")
+
+                if not reasons:
+                    reasons.append("Technical indicators mixed signals de rahe hain.")
+
+                for r in reasons:
+                    st.info(r)
+
+                # Metrics
+                m1, m2, m3, m4, m5 = st.columns(5)
+                m1.metric("💰 Price", f"₹{latest['Close']:.2f}", f"{change:+.2f}%")
+                m2.metric("📊 RSI", f"{rsi_val:.1f}",
+                        "🔴 Overbought" if rsi_val > 70 else "🟢 Oversold" if rsi_val < 30 else "🟡 Neutral")
+                m3.metric("🔊 Volume", f"{vol_ratio:.1f}x",
+                        "🔥 High" if vol_ratio > 1.5 else "📉 Low" if vol_ratio < 0.7 else "Normal")
+                m4.metric("📍 52W Pos", f"{week52_pos:.0f}%",
+                        f"H:₹{df['Close'].max():.0f}")
+                m5.metric("📈 MACD",
+                        "Bullish ✅" if latest['MACD'] > latest['MACD_Signal'] else "Bearish ⚠️",
+                        f"{latest['MACD']:.2f}")
+                
+                current_price = latest["Close"]
+                
+                target_price = round(current_price * 1.10, 2)
+                upside = round(((target_price-current_price)/current_price)*100,2)
+
+                st.metric(
+                    "🎯 AI Target Price",
+                    f"₹{target_price}",
+                    f"{upside}% Upside"
+                )
+
+                # Chart
+                fig = make_subplots(rows=3, cols=1, shared_xaxes=True,
+                                    row_heights=[0.55, 0.22, 0.23],
+                                    vertical_spacing=0.03,
+                                    subplot_titles=[f'{sym} Price', 'RSI', 'MACD'])
+
+                fig.add_trace(go.Candlestick(
+                    x=df.index, open=df['Open'], high=df['High'],
+                    low=df['Low'], close=df['Close'],
+                    increasing_line_color='#00d68f',
+                    decreasing_line_color='#ff4d6d', name='Price'), row=1, col=1)
+
+                fig.add_trace(go.Scatter(x=df.index, y=df['SMA_50'],
+                    line=dict(color='#f0a500', width=1.5), name='50 SMA'), row=1, col=1)
+
+                if df['SMA_200'].notna().any():
+                    fig.add_trace(go.Scatter(x=df.index, y=df['SMA_200'],
+                        line=dict(color='#8b5cf6', width=1.5), name='200 SMA'), row=1, col=1)
+
+                fig.add_trace(go.Scatter(x=df.index, y=df['BB_Upper'],
+                    line=dict(color='rgba(67,97,238,0.4)', width=1),
+                    name='BB', showlegend=False), row=1, col=1)
+                fig.add_trace(go.Scatter(x=df.index, y=df['BB_Lower'],
+                    line=dict(color='rgba(67,97,238,0.4)', width=1),
+                    fill='tonexty', fillcolor='rgba(67,97,238,0.05)',
+                    showlegend=False), row=1, col=1)
+
+                fig.add_trace(go.Scatter(x=df.index, y=df['RSI'],
+                    line=dict(color='#4361ee', width=2),
+                    name='RSI', showlegend=False), row=2, col=1)
+                fig.add_hline(y=70, line_dash="dash", line_color="rgba(255,77,109,0.5)", row=2, col=1)
+                fig.add_hline(y=30, line_dash="dash", line_color="rgba(0,214,143,0.5)", row=2, col=1)
+
+                colors = ['#00d68f' if v >= 0 else '#ff4d6d' for v in df['MACD_Hist'].fillna(0)]
+                fig.add_trace(go.Bar(x=df.index, y=df['MACD_Hist'],
+                    marker_color=colors, showlegend=False), row=3, col=1)
+                fig.add_trace(go.Scatter(x=df.index, y=df['MACD'],
+                    line=dict(color='#4361ee', width=1.5),
+                    name='MACD', showlegend=False), row=3, col=1)
+                fig.add_trace(go.Scatter(x=df.index, y=df['MACD_Signal'],
+                    line=dict(color='#f0a500', width=1.5),
+                    name='Signal', showlegend=False), row=3, col=1)
+
+                fig.update_layout(
+                    template='plotly_dark', paper_bgcolor='#0c0c14',
+                    plot_bgcolor='#0c0c14', height=580,
+                    margin=dict(t=30, b=10, l=10, r=10),
+                    xaxis_rangeslider_visible=False,
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02,
+                            xanchor="right", x=1, font=dict(size=10)))
+                st.plotly_chart(fig, use_container_width="stretchS",key="nain_stock_chart")
+
+                st.markdown("---")
+                st.subheader("🏛 FII / DII Flow")
+
+                fii_score = 60 if vol_ratio > 1 else 40
+
+                st.metric(
+                    "Institutional Flow Score",
+                    fii_score
+                )
+
+                if fii_score > 55:
+                    st.success("🟢 FII Buying Interest")
+                else:
+                    st.warning("🟡 Weak Institutional Flow")
+
+    # PASTE HERE 👇
+
+                    st.markdown("---")
+                    st.divider()
+                    st.markdown("### 🏦 FII / DII Smart Money Analysis")
+
+                    fii_score = 40
+
+                    if latest["MACD"] > latest["MACD_Signal"]:
+                        fii_score += 20
+
+                    if rsi_val > 50:
+                        fii_score += 20
+
+                    if vol_ratio > 1:
+                        fii_score += 20
+
+                    if fii_score >= 80:
+                        flow_status = "🟢 Strong Institutional Buying"
+                    elif fii_score >= 60:
+                        flow_status = "🟡 Moderate Institutional Interest"
+                    else:
+                        flow_status = "🔴 Weak Institutional Flow"
+
+                    st.metric("Institutional Flow Score", f"{fii_score}/100")
+                    st.info(flow_status)
+
+                    if fii_score >= 80:
+                        st.success(
+                            "Smart Money View: Institutions accumulation phase me dikh rahe hain."
+                        )
+                    elif fii_score >= 60:
+                        st.warning(
+                            "Smart Money View: Mixed institutional activity dikh rahi hai."
+                        )
+                    else:
+                        st.error(
+                            "Smart Money View: Institutions aggressively buy karte nahi dikh rahe."
+                        )
+
+                        st.markdown("---")
+                    st.subheader("📊 Multi-Timeframe Analysis")
+
+                    daily_trend = "🟢 Bullish" if latest["MACD"] > latest["MACD_Signal"] else "🔴 Bearish"
+
+                    weekly_trend = "🟢 Bullish" if rsi_val > 50 else "🟡 Neutral"
+
+                    sma50_value = df["Close"].rolling(50).mean().iloc[-1]
+                    monthly_trend = "🟢 Bullish" if latest["Close"] > sma50_value else "🔴 Bearish"
+                    
+                    trend_score = 0
+
+                    if "Bullish" in daily_trend:
+                        trend_score += 35
+
+                    if "Bullish" in weekly_trend:
+                        trend_score += 35
+
+                    if "Bullish" in monthly_trend:
+                        trend_score += 30
+
+                    st.metric("Overall Trend Strength", f"{trend_score}/100")
+
+                    st.info(f"Daily Trend: {daily_trend}")
+                    st.info(f"Weekly Trend: {weekly_trend}")
+                    st.info(f"Monthly Trend: {monthly_trend}")
+
+                    st.subheader("📰 News Sentiment AI")
+
+                    sentiment_score = signal_score * 15
+
+                    if sentiment_score >= 70:
+                        sentiment = "🟢 Positive"
+                    elif sentiment_score >= 40:
+                        sentiment = "🟡 Neutral"
+                    else:
+                        sentiment = "🔴 Negative"
+
+                    st.metric("News Sentiment Score", f"{sentiment_score}/100")
+                    st.info(f"Market Sentiment: {sentiment}")
+
+                    st.markdown("---")
+                    st.subheader("⚡ Stock Strength Meter")
+
+                    strength = int((rsi_val))
+
+                    st.progress(strength / 100)
+
+                    st.metric(
+                        "Stock Strength",
+                        f"{strength}/100"
+                    )
+
+                    if strength >= 75:
+                        st.success("🟢 Strong Stock")
+                    elif strength >= 50:
+                        st.warning("🟡 Average Strength")
+                    else:
+                        st.error("🔴 Weak Stock")
+
+                        st.markdown("---")
+                        st.subheader("🩺 Portfolio Doctor")
+
+                    if 'risk_score' not in locals():
+                        risk_score = 100 - strength 
+                        st.write("Risk Score:", risk_score)
+                        st.write("Health Score:", health_score)
+
+                        portfolio_score = max(0, min(100, int((100 - risk_score) + health_score/2)))
+                        st.metric("Portfolio Health Score", f"{portfolio_score}/100")
+
+                        if portfolio_score >= 80:
+                            st.success("✅ Healthy Portfolio")
+                        elif portfolio_score >= 60:
+                            st.warning("🟡 Portfolio Needs Improvement")
+                        else:
+                            st.error("🔴 Portfolio Risky")
+
+                            if portfolio_score < 60:
+
+                                st.warning("""
+                                Portfolio Problems:
+                                
+                                • Risk jyada hai
+                                
+                                • Diversification kam hai
+                                
+                                • Rebalancing ki zarurat hai
+                                """)
+                            else:
+                                st.info("""
+                                Portfolio Stable Hai
+                                
+                                • Risk manageable hai
+                                
+                                • Long term holding possible hai
+                                """)
+                            st.markdown("---")
+                            st.subheader("📈 AI Investment Thesis Generator")
+
+                        with st.expander("Generate Investment Thesis"):
+
+                    # 52 Week Position
+                            try:
+                                week52_high = df['High'].tail(252).max()
+                                week52_low = df['Low'].tail(252).min()
+                                current_price = df['Close'].iloc[-1]
+                                if week52_high != week52_low:
+                                    weeks52_pos = ((current_price - week52_low) / 
+                                                (week52_high - week52_low)) * 100
+                                else:
+                                    weeks52_pos = 50.0
+                            except:
+                                weeks52_pos = 50.0
+
+                            thesis = f"""
+                            STOCK: {company}
+
+                            Current Price: ₹{current_price:.2f}
+
+                            RSI: {rsi_val:.1f}
+
+                            AI VIEW:
+
+                            Strengths:
+                            - Strong market presence
+                            - Established business model
+                            - Technical indicators monitored
+
+                            Risks:
+                            - Market volatility
+                            - Sector specific risks
+                            - Economic slowdown impact
+
+                            Investment Thesis:
+                            This stock should be evaluated based on long-term fundamentals,
+                            technical momentum and risk profile.
+                        """
+
+                        if strength >= 80:
+                            verdict = "🟢 STRONG BUY"
+                        elif strength >= 65:
+                            verdict = "🟢 BUY"
+                        elif strength >= 45:
+                            verdict = "🟡 HOLD"
+                        else:
+                            verdict = "🔴 AVOID"
+
+                        thesis += f"""
+
+                            Verdict:
+                            {verdict}
+                            """
+
+                        st.write(thesis)
+
+                        st.markdown("---")
+                        st.subheader("🎯 AI Recommendation")
+                        
+
+                        st.success(f"""
+                        Final Verdict: {verdict}
+
+                        Confidence Score: {strength}/100
+
+                        AI Reason:
+                        • RSI: {rsi_val:.1f}
+                        • MACD: {'Bullish' if latest['MACD'] > latest['MACD_Signal'] else 'Bearish'}
+                        • 52W Position: {weeks52_pos:.0f}%
+                        • News Sentiment: {sentiment}
+                        """) 
+
+                    # AI Analysis
+                st.divider()
+                st.markdown("""
+                <div class="bf-section">
+                    <div class="bf-section-line"></div>
+                    <div class="bf-section-title">AI Research</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+                st.markdown("### Analysis in Hindi")
+
+                api_key = os.getenv('GROQ_API_KEY')
+                if not api_key:
+                    st.error("❌ GROQ_API_KEY nahi mili! .env file check karo")
+                    st.stop()
+
+                with st.spinner("🧠 AI analysis kar raha hai..."):
+                    try:
+                        #st.write("API Loaded:", bool(api_key))
+                        #st.write("Key Start:", api_key[:10])
+
+                        client = Groq(api_key=api_key)
+                        sma50 = latest['SMA_50'] if pd.notna(latest['SMA_50']) else 0
+                        p_vs_50 = ((latest['Close'] - sma50) / sma50 * 100) if sma50 else 0
+
+                        fund_total_assets = (
+                            f"₹{total_assets_cr:.2f} Cr"
+                            if total_assets_cr is not None
+                            else "N/A"
+                        )
+
+                        fund_total_debt = (
+                            f"₹{total_debt_cr:.2f} Cr"
+                            if total_debt_cr is not None
+                            else "N/A"
+                        )
+
+                        fund_cash = (
+                            f"₹{cash_cr:.2f} Cr"
+                            if cash_cr is not None
+                            else "N/A"
+                        )
+
+                        fund_equity = (
+                            f"₹{equity_cr:.2f} Cr"
+                            if equity_cr is not None
+                            else "N/A"
+                        )
+
+                        prompt = f"""
+    Tu expert Indian stock market analyst hai.
+    {user_type} ko simple Hindi mein samjhao.
+
+    Stock: {sym}
+    Price: Rs{latest['Close']:.2f} ({change:+.2f}% aaj)
+    RSI: {rsi_val:.1f}
+    MACD: {latest['MACD']:.3f} (Signal: {latest['MACD_Signal']:.3f})
+    Price vs 50 SMA: {p_vs_50:.1f}%
+    Volume: {vol_ratio:.1f}x average
+    52W Position: {week52_pos:.0f}%
+    52W High: Rs{df['Close'].max():.2f}
+    52W Low: Rs{df['Close'].min():.2f}
+
+    FUNDAMENTAL ANALYSIS
+
+    Balance Sheet ko analyze karo:
+
+    - Total Assets: {fund_total_assets}
+    - Total Debt: {fund_total_debt}
+    - Cash: {fund_cash}
+    - Shareholders Equity: {fund_equity}
+
+    Debt level aur equity ke comparison ko explain karo.
+    Cash position ko explain karo.
+    Overall balance sheet strength ko simple Hindi mein explain karo.
+    Agar data incomplete ho to clearly "Data unavailable" bolo.
+
+    Book Knowledge: {BOOK_KNOWLEDGE}
+
+    FUNDAMENTAL DATA
+
+    Total Assets:
+    {fund_total_assets}
+    Total Debt:
+    {fund_total_debt}
+    Cash: {fund_cash}
+    Shareholders Equity:
+    {fund_equity}
+
+    Is format mein SIRF HINDI mein likho:
+
+    TECHNICAL PICTURE
+    [2-3 lines current situation]
+
+    FUNDAMENTAL PICTURE
+    [Balance Sheet ke basis par 2-3 lines analysis]
+
+    DEBT & FINANCIAL HEALTH
+    [Debt, Equity aur Cash position explain karo]
+
+    OVERALL VIEW
+    [Technical + Fundamental picture ko combine karke 2-3 lines]
+
+    PSYCHOLOGY CHECK
+    [FOMO, greed, fear warning]
+
+    BOOK INSIGHT
+    [Relevant lesson]
+
+    RECOMMENDATION
+    Signal: Buy/Hold/Avoid
+    Entry: Rs[price]
+    Stop Loss: Rs[price]
+    Target: Rs[price]
+    Risk: LOW/MEDIUM/HIGH
+    Confidence: [%]
+
+    SUMMARY
+    [1 line seedhi baat]
+
+    300 words max.
+    """
+                        response = client.chat.completions.create(
+                            model="openai/gpt-oss-120b",
+                            max_tokens=1000,
+                            messages=[{"role": "user", "content": prompt}]
+                        )
+                        analysis = response.choices[0].message.content
+                        st.markdown(analysis)
+
+                        report_text = f"""
+                        BHARATFINAI STOCK REPORT
+
+                        Stock: {sym}
+                        Price: ₹{latest['Close']:.2f}
+                        RSI: {rsi_val:.1f}
+
+                        AI Analysis:
+                        {analysis}
+                        """
+
+                        # YAHAN PASTE KARO 👇
+
+                        st.markdown("### 🎯 AI Investment Thesis")
+
+                        confidence = int((93 + 70 + 77) / 3)
+
+                        high_52 = df["High"].rolling(252).max().iloc[-1]
+                        low_52 = df["Low"].rolling(252).min().iloc[-1]
+
+                        weeks52_pos = ((latest["Close"] - low_52) /
+                                    (high_52 - low_52)) * 100
+                        
+                        if pd.isna(weeks52_pos): weeks52_pos = 50
+
+                        bull_case = [
+                            "MACD Bullish" if latest['MACD'] > latest['MACD_Signal'] else "MACD Weak",
+                            f"52W Position {weeks52_pos:.0f}%",
+                            f"RSI {rsi_val:.1f}"
+                        ]
+
+                        bear_case = [
+                            "Low Volume" if vol_ratio < 1 else "Healthy Volume",
+                            "Weak Institutional Flow"
+                        ]
+
+                        signal = "Hold" if signal_score >= 3 else "Avoid"
+                        if signal_score >= 5:
+                            signal = "Buy"
+                        elif signal_score >= 3:
+                            signal = "Hold"
+                        else:
+                            signal = "Avoid"
+
+                        st.info(f"""
+                        📈 Bull Case:
+                        • {bull_case[0]}
+                        • {bull_case[1]}
+                        • {bull_case[2]}
+
+                        📉 Bear Case:
+                        • {bear_case[0]}
+                        • {bear_case[1]}
+
+                        🎯 Verdict: {signal}
+
+                        🔥 Confidence: {confidence}%
+                        """)
+
+                        # FIR DOWNLOAD BUTTON
+                        
+
+                        st.download_button(
+                            "📄 Download Analysis Report",
+                            data=report_text,
+                            file_name=f"{sym}_report.txt",
+                            mime="text/plain"
+                        )
+
+                        # News Sentiment
+                        news_sentiment, news_score = get_news_sentiment(sym)
+
+                        st.divider()
+                        st.markdown("### 📰 News Sentiment")
+
+                        if news_sentiment == "Positive":
+                            st.success(f"🟢 Positive News Sentiment (+{news_score})")
+                        elif news_sentiment == "Negative":
+                            st.error(f"🔴 Negative News Sentiment ({news_score})")
+                        else:
+                            st.warning("🟡 Neutral News Sentiment")
+
+                            # AI Risk Meter
+                            st.divider()
+                            st.subheader("🛡️ AI Risk Meter")
+
+                            volatility = abs(latest["Close"] - latest["Open"]) / latest["Close"] * 100
+
+                            if volatility < 2:
+                                risk_level = "🟢 Low Risk"
+                                risk_score = 85
+                            elif volatility < 5:
+                                risk_level = "🟡 Medium Risk"
+                                risk_score = 65
+                            else:
+                                risk_level = "🔴 High Risk"
+                                risk_score = 35
+
+                            max_downside = round(latest["Close"] * 0.90, 2)
+
+                            st.metric("Risk Score", f"{risk_score}/100")
+                            st.info(f"Risk Level: {risk_level}")
+                            st.warning(f"Maximum Downside Estimate: ₹{max_downside}")
+
+                            if risk_score >= 80:
+                                st.success("Capital Protection Strong Hai.")
+                            elif risk_score >= 60:
+                                st.warning("Moderate Risk Present Hai.")
+                            else:
+                                st.error("Risk High Hai, Position Size Kam Rakho.")
+
+                                # Hedge Fund Conviction Dashboard
+                            st.divider()
+                            st.subheader("🏦 Hedge Fund Conviction Dashboard")
+
+                            conviction_score = int((80 + fii_score + 70 + risk_score) / 4)
+
+                            if conviction_score >= 80:
+                                conviction = "🟢 HIGH CONVICTION"
+                                action = "Accumulation candidate"
+                            elif conviction_score >= 60:
+                                conviction = "🟡 MEDIUM CONVICTION"
+                                action = "Watchlist / partial position"
+                            else:
+                                conviction = "🔴 LOW CONVICTION"
+                                action = "Avoid / wait for confirmation"
+
+                            c1, c2 = st.columns(2)
+
+                            with c1:
+                                st.metric("Conviction Score", f"{conviction_score}/100")
+                                st.info(conviction)
+
+                            with c2:
+                                st.metric("Suggested Action", action)
+                                st.warning("Use position sizing. Not financial advice.")
+
+                            st.caption(
+                                "Based on AI Thesis, Institutional Flow, Multi-Timeframe Trend and Risk Meter."
+                            )
+
+                        # Trust Engine
+                        st.divider()
+                        st.markdown("""
+                            <div class="bf-section">
+                                <div class="bf-section-line"></div>
+                                <div class="bf-section-title">Trust Engine</div>
+                            </div>
+                            """, unsafe_allow_html=True)
+
+                        rsi_sc, macd_sc, risk_sc, trust = get_trust_scores(
+                            rsi_val, latest['MACD'], latest['MACD_Signal'], week52_pos)
+
+                        tc1, tc2, tc3 = st.columns(3)
+                        #with tc1:
+                        #   st.metric("📊 Technical", f"{rsi_sc:.0f}/100",
+                        #            "Strong ✅" if rsi_sc > 60 else "Weak ⚠️")
+                        #with tc2:
+                        #   st.metric("⚡ Momentum", f"{macd_sc:.0f}/100",
+                                    #  "Bullish ✅" if macd_sc > 50 else "Bearish ⚠️")
+                        #with tc3:
+                        #   st.metric("🛡️ Risk", f"{risk_sc:.0f}/100",
+                        #            "Safe ✅" if risk_sc > 50 else "Risky ⚠️")
+
+                        st.metric("Technical", f"{rsi_sc:.0f}/100")
+                        st.metric("Momentum", f"{macd_sc:.0f}/100")
+                        st.metric("Risk", f"{risk_sc:.0f}/100")
+
+                        st.progress(int(trust) / 100)
+                        if trust > 65:
+                            st.success(f"✅ {trust:.0f}/100 — High Confidence")
+                        elif trust > 40:
+                            st.warning(f"⚠️ {trust:.0f}/100 — Medium Confidence")
+                        else:
+                            st.error(f"🚨 {trust:.0f}/100 — Low Confidence — Avoid!")
+
+                        st.markdown("### 💡 WHY Ye Signal Diya?")
+                        st.markdown(f"""
+    **RSI {rsi_val:.1f}** → {"🔴 Overbought — Caution!" if rsi_val > 70 else "🟢 Oversold — Opportunity!" if rsi_val < 30 else "🟡 Neutral — Wait for confirmation"}
+
+    **52W Position: {week52_pos:.0f}%** → {"🚨 FOMO Zone — Near 52W High!" if week52_pos > 80 else "✅ Safe Zone" if week52_pos < 40 else "⚠️ Middle Zone — Caution"}
+
+    **MACD** → {"✅ Bullish Momentum" if latest['MACD'] > latest['MACD_Signal'] else "⚠️ Bearish Momentum"}
+
+    **Max Downside Risk:** ₹{latest['Close'] * 0.05:.0f} — ₹{latest['Close'] * 0.10:.0f}
+
+    **Suggested Stop Loss:** ₹{latest['Close'] * 0.95:.0f}
+                        """)
+
+                    except Exception as e:
+                        st.error(f"❌ AI Error: {e}")
+
+                        st.divider()
+                    st.subheader("🎯 AI Entry / Exit Zone")
+
+                    entry_zone_low = latest["Close"] * 0.98
+                    entry_zone_high = latest["Close"] * 1.00
+
+                    breakout_level = latest["Close"] * 1.02
+
+                    target1 = latest["Close"] * 1.10
+                    target2 = latest["Close"] * 1.20
+
+                    stop_loss = latest["Close"] * 0.95
+
+                    st.success(
+                        f"""
+                    🎯 Ideal Buy Zone: ₹{entry_zone_low:.2f} - ₹{entry_zone_high:.2f}
+
+                    🚀 Breakout Level: ₹{breakout_level:.2f}
+
+                    💰 Target 1: ₹{target1:.2f}
+
+                    💰 Target 2: ₹{target2:.2f}
+
+                    🛑 Stop Loss: ₹{stop_loss:.2f}
+                    """
+                    )
+
+                    risk_reward = (target1 - latest["Close"]) / (latest["Close"] - stop_loss)
+
+                    st.info(f"Risk Reward Ratio: 1 : {risk_reward:.1f}")
+
+                    st.divider()
+                    st.subheader("📊 Portfolio Health Score")
+
+                    portfolio_score = int(
+                        (trust * 0.4) +
+                        (70 * 0.3) +
+                        (fii_score * 0.3)
+                    )
+
+                    st.metric("Portfolio Health", f"{portfolio_score}/100")
+
+                    if portfolio_score >= 80:
+                        st.success("🟢 Institutional Grade Portfolio")
+                    elif portfolio_score >= 60:
+                        st.warning("🟡 Moderate Quality Portfolio")
+                    else:
+                        st.error("🔴 Weak Portfolio Structure")
+
+                        st.markdown("---")
+                        st.subheader("🏆 Final AI Grade")
+
+                        if portfolio_score >= 90:
+                            st.success("🏆 Grade A+ | Elite Portfolio")
+                        elif portfolio_score >= 80:
+                            st.success("🥇 Grade A | Strong Portfolio")
+                        elif portfolio_score >= 70:
+                            st.info("🥈 Grade B | Good Portfolio")
+                        elif portfolio_score >= 60:
+                            st.warning("🥉 Grade C | Average Portfolio")
+                        else:
+                            st.error("⚠️ Grade D | High Risk Portfolio")
+
+            st.markdown("---")
+            st.subheader("🩺 AI Portfolio Doctor")
+
+            strengths = []
+            weaknesses = []
+
+            if rsi_val > 50:
+                strengths.append("Momentum Strong")
+
+            if latest["MACD"] > latest["MACD_Signal"]:
+                strengths.append("Bullish MACD")
+
+            if week52_pos < 80:
+                strengths.append("Safe Distance From 52W High")
+
+            if rsi_val < 40:
+                weaknesses.append("Weak Momentum")
+
+            if week52_pos > 90:
+                weaknesses.append("Near 52W High Risk")
+
+            st.success("💪 Strengths: " + ", ".join(strengths))
+
+            if weaknesses:
+                st.warning("⚠ Weaknesses: " + ", ".join(weaknesses))
+            else:
+                st.success("✅ No Major Weakness Found")
+
+            if portfolio_score >= 80:
+                st.success("🚀 Action: Strong Hold")
+            elif portfolio_score >= 60:
+                st.info("👀 Action: Watchlist / Partial Position")
+            else:
+                st.error("🛑 Action: Avoid")
+
+            st.markdown("---")
+            st.subheader("🏆 Warren Buffett Quality Score")
+
+            buffett_score = 0
+
+            if week52_pos < 80:
+                buffett_score += 25
+
+            if rsi_val > 50:
+                buffett_score += 25
+
+            if latest["MACD"] > latest["MACD_Signal"]:
+                buffett_score += 25
+
+            if health_score >= 70:
+                buffett_score += 25
+
+            st.metric("Buffett Score", f"{buffett_score}/100")
+
+            if buffett_score >= 80:
+                st.success("🟢 Grade A | Buffett Style Compounder")
+            elif buffett_score >= 60:
+                st.info("🔵 Grade B | Good Long Term Candidate")
+            elif buffett_score >= 40:
+                st.warning("🟡 Grade C | Average Business Quality")
+            else:
+                st.error("🔴 Grade D | Not Buffett Style")
+
+                # CSV Export
+                with st.expander("📊 Raw Data + Export"):
+                    cols = ['Open', 'High', 'Low', 'Close', 'Volume', 'RSI', 'MACD', 'SMA_50']
+                    display_df = df.tail(30)[cols].round(2)
+                    st.dataframe(display_df, use_container_width="stretch")
+                    csv = display_df.to_csv().encode('utf-8')
+                    st.download_button(
+                        "📥 CSV Download Karo",
+                        csv,
+                        f"{sym}_data.csv",
+                        "text/csv"
+                    )
+
+# ─────────────────────────────────────────
+# TAB 2: MULTI SCANNER
+# ─────────────────────────────────────────
+with tab2:
+    
+    st.markdown("### 🔭 Multi-Stock Scanner")
+    st.caption("Ek saath multiple stocks analyze karo — Heap-based ranking")
+
+    scanner_input = st.text_input(
+        "Stocks daalo (comma separated)",
+        value="RELIANCE,TCS,INFY,SBIN,MARUTI,ADANIENT,HDFCBANK,WIPRO",
+        key="multi"
+    )
+
+    sc1, sc2 = st.columns(2)
+    with sc1:
+        scan_period = st.selectbox("Period", ["3mo", "6mo", "1y"], index=1, key="sp")
+    with sc2:
+        top_n = st.selectbox("Top N stocks", [3, 5, 10], index=1, key="tn")
+
+    if st.button("🚀 Scanner Chalao", key="scan_btn"):
+        if not scanner_input:
+            st.warning("Stocks daalo!")
+        else:
+            stocks_list = [s.strip().upper() for s in scanner_input.split(",") if s.strip()]
+            st.markdown(f"**Scanning {len(stocks_list)} stocks...**")
+
+            results = []
+            heap_opportunities = []  # Min heap for top opportunities
+            heap_risky = []          # Max heap for risky stocks
+
+            progress_bar = st.progress(0)
+            status = st.empty()
+
+            for idx, stk in enumerate(stocks_list):
+                try:
+                    status.text(f"⏳ Analyzing {stk}... ({idx+1}/{len(stocks_list)})")
+                    sym_s = stk if stk.endswith('.NS') else stk + '.NS'
+                    df_s = get_stock_data(sym_s, scan_period)
+
+                    if df_s.empty:
+                        continue
+
+                    delta = df_s['Close'].diff()
+                    gain = delta.where(delta > 0, 0).rolling(14).mean()
+                    loss = -delta.where(delta < 0, 0).rolling(14).mean()
+                    rs = gain / loss
+                    df_s['RSI'] = 100 - (100 / (1 + rs))
+
+                    ema12 = df_s['Close'].ewm(span=12, adjust=False).mean()
+                    ema26 = df_s['Close'].ewm(span=26, adjust=False).mean()
+                    macd_line = ema12 - ema26
+                    signal_line = macd_line.ewm(span=9, adjust=False).mean()
+                    macd_s = pd.DataFrame({"MACD_12_26_9": macd_line, "MACDs_12_26_9": signal_line})
+                    df_s['MACD'] = macd_s['MACD_12_26_9']
+                    df_s['MACD_Signal'] = macd_s['MACDs_12_26_9']
+
+                    lat = df_s.iloc[-1]
+                    prev_s = df_s.iloc[-2]
+                    chg = ((lat['Close'] - prev_s['Close']) / prev_s['Close']) * 100
+                    rsi = lat['RSI']
+                    w52 = ((lat['Close'] - df_s['Close'].min()) /
+                           (df_s['Close'].max() - df_s['Close'].min()) * 100)
+
+                    rsi_sc, macd_sc, risk_sc, trust = get_trust_scores(
+                        rsi, lat['MACD'], lat['MACD_Signal'], w52)
+
+                    signal = get_signal(rsi, w52, trust)
+
+                    result = {
+                        "Stock": stk,
+                        "Price": f"₹{lat['Close']:.2f}",
+                        "Change": f"{chg:+.2f}%",
+                        "RSI": round(rsi, 1),
+                        "52W%": f"{w52:.0f}%",
+                        "Trust": round(trust, 0),
+                        "Signal": signal,
+                        "Stop Loss": f"₹{lat['Close'] * 0.95:.2f}",
+                    }
+                    results.append(result)
+
+                    # Heap operations — DSA!
+                    # Max heap for opportunities (negate for max)
+                    heapq.heappush(heap_opportunities, (-trust, stk, signal))
+                    # Min heap for risky (low trust = risky)
+                    heapq.heappush(heap_risky, (trust, stk, signal))
+
+                except Exception:
+                    pass
+
+                progress_bar.progress((idx + 1) / len(stocks_list))
+
+            status.empty()
+            progress_bar.empty()
+
+            if results:
+                # Top opportunities from heap
+                st.divider()
+                st.markdown("### 🏆 Heap-Based Ranking")
+
+                top_opp = []
+                temp_heap = heap_opportunities.copy()
+                for _ in range(min(top_n, len(temp_heap))):
+                    if temp_heap:
+                        neg_trust, stk, sig = heapq.heappop(temp_heap)
+                        top_opp.append((stk, -neg_trust, sig))
+
+                top_risk = []
+                temp_heap2 = heap_risky.copy()
+                for _ in range(min(3, len(temp_heap2))):
+                    if temp_heap2:
+                        trust_val, stk, sig = heapq.heappop(temp_heap2)
+                        top_risk.append((stk, trust_val, sig))
+
+                col_opp, col_risk = st.columns(2)
+
+                with col_opp:
+                    st.markdown("#### 🟢 Top Opportunities")
+                    for i, (stk, trust, sig) in enumerate(top_opp, 1):
+                        st.success(f"#{i} **{stk}** — Trust: {trust:.0f}/100 | {sig}")
+
+                with col_risk:
+                    st.markdown("#### 🔴 Avoid These")
+                    for i, (stk, trust, sig) in enumerate(top_risk, 1):
+                        st.error(f"#{i} **{stk}** — Trust: {trust:.0f}/100 | {sig}")
+
+                # Full results table
+                st.divider()
+                st.markdown("### 📊 Complete Scan Results")
+
+                df_results = pd.DataFrame(results)
+
+                # Color the trust column
+                def color_trust(val):
+                    if val >= 65:
+                        return 'background-color: #1a3a1a; color: #00d68f'
+                    elif val >= 40:
+                        return 'background-color: #3a3a1a; color: #f0a500'
+                    else:
+                        return 'background-color: #3a1a1a; color: #ff4d6d'
+
+                styled = df_results.style.map(color_trust, subset=['Trust'])
+                st.dataframe(styled, use_container_width="stretch", hide_index=True)
+
+                # Export
+                csv_scan = df_results.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    "📥 Scan Results CSV Download",
+                    csv_scan,
+                    "scanner_results.csv",
+                    "text/csv"
+                )
+
+                st.caption(f"✅ {len(results)}/{len(stocks_list)} stocks successfully scanned")
+
+        # ====================================
+# TAB 4 : AI COMPARISON
+# ====================================
+
+with tab3:
+
+    st.markdown("### 🤖 AI Stock Comparison")
+    st.caption("2 stocks ko compare karo")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        stock1 = st.text_input("Stock 1", value="RELIANCE", key="cmp1")
+
+    with col2:
+        stock2 = st.text_input("Stock 2", value="TCS", key="cmp2")
+
+    if st.button("⚔️ Compare Stocks", key="compare_btn"):
+
+        s1 = stock1.upper().strip()
+        s2 = stock2.upper().strip()
+
+        sym1 = s1 if s1.endswith(".NS") else s1 + ".NS"
+        sym2 = s2 if s2.endswith(".NS") else s2 + ".NS"
+
+        try:
+            df1 = yf.Ticker(sym1).history(period="1y")
+            df2 = yf.Ticker(sym2).history(period="1y")
+
+            if df1.empty or df2.empty:
+                st.error("Stock data nahi mila.")
+                st.stop()
+
+            price1 = df1["Close"].iloc[-1]
+            price2 = df2["Close"].iloc[-1]
+
+           # rsi1 = ta.rsi(df1["Close"], length=14).dropna().iloc[-1]
+            #rsi2 = ta.rsi(df2["Close"], length=14).dropna().iloc[-1]
+
+            #macd1 = ta.macd(df1["Close"])
+            #macd2 = ta.macd(df2["Close"])
+            rsi1= 50 
+            rsi2 = 50
+
+            m1 = 0
+            ms1 = 0
+
+            m2 = 0
+            ms2 = 0
+
+            #m1 = macd1["MACD_12_26_9"].dropna().iloc[-1]
+            #ms1 = macd1["MACDs_12_26_9"].dropna().iloc[-1]
+            #m2 = macd2["MACD_12_26_9"].dropna().iloc[-1]
+            #ms2 = macd2["MACDs_12_26_9"].dropna().iloc[-1]
+
+            w52_1 = ((price1 - df1["Close"].min()) / (df1["Close"].max() - df1["Close"].min())) * 100
+            w52_2 = ((price2 - df2["Close"].min()) / (df2["Close"].max() - df2["Close"].min())) * 100
+
+            _, _, _, trust1 = get_trust_scores(rsi1, m1, ms1, w52_1)
+            _, _, _, trust2 = get_trust_scores(rsi2, m2, ms2, w52_2)
+
+            sent1, bonus1 = get_news_sentiment(s1)
+            sent2, bonus2 = get_news_sentiment(s2)
+
+            final1 = trust1 + bonus1
+            final2 = trust2 + bonus2
+
+            compare_df = pd.DataFrame({
+                "Metric": ["Price", "RSI", "52W Position", "Trust Score", "Sentiment", "Final Score"],
+                s1: [round(price1, 2), round(rsi1, 1), f"{w52_1:.0f}%", round(trust1, 0), sent1, round(final1, 0)],
+                s2: [round(price2, 2), round(rsi2, 1), f"{w52_2:.0f}%", round(trust2, 0), sent2, round(final2, 0)]
+            })
+
+            st.dataframe(compare_df, use_container_width="stretch")
+
+            winner = s1 if final1 > final2 else s2
+            winner_score = final1 if final1 > final2 else final2
+
+            st.success(f"🏆 Better Pick: {winner} | Final Score: {winner_score:.0f}/100")
+
+            st.markdown("### ⚔️ Multi-Stock Battle")
+
+            loser = s2 if winner == s1 else s1
+            loser_score = final2 if winner == s1 else final1
+            score_gap = abs(final1 - final2)
+
+            st.success(f"🥇 Winner: {winner} | Score: {winner_score:.0f}/100")
+            st.warning(f"🥈 Runner Up: {loser} | Score: {loser_score:.0f}/100")
+            st.info(f"📊 Score Difference: {score_gap:.0f} points")
+
+
+        except Exception as e:
+            st.error(f"Error: {e}")
+
+# -----------------------------------
+# PORTFOLIO TRACKER UPGRADE
+# -----------------------------------
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 📊 Portfolio Tracker")
+
+df_port = pd.read_csv(PORTFOLIO_FILE)
+
+if len(df_port) > 0:
+    portfolio_rows = []
+    total_investment = 0
+    current_value = 0
+
+    for _, row in df_port.iterrows():
+        symbol = str(row["Symbol"]).upper()
+        qty = float(row["Quantity"])
+        buy_price = float(row["BuyPrice"])
+
+        try:
+            yf_symbol = symbol if symbol.endswith(".NS") else symbol + ".NS"
+            hist = yf.Ticker(yf_symbol).history(period="5d")
+
+            if not hist.empty:
+                current_price = hist["Close"].iloc[-1]
+                investment = qty * buy_price
+                value = qty * current_price
+                pnl = value - investment
+                pnl_pct = (pnl / investment) * 100 if investment > 0 else 0
+
+                total_investment += investment
+                current_value += value
+
+                portfolio_rows.append({
+                    "Stock": symbol,
+                    "Qty": qty,
+                    "Buy": round(buy_price, 2),
+                    "Current": round(current_price, 2),
+                    "Investment": round(investment, 2),
+                    "Value": round(value, 2),
+                    "P/L ₹": round(pnl, 2),
+                    "P/L %": round(pnl_pct, 2)
+                })
+
+        except Exception:
+            pass
+
+    if portfolio_rows:
+        portfolio_df = pd.DataFrame(portfolio_rows)
+
+        total_pnl = current_value - total_investment
+        total_pnl_pct = (total_pnl / total_investment) * 100 if total_investment > 0 else 0
+
+        st.sidebar.metric("Total Investment", f"₹{total_investment:,.2f}")
+        st.sidebar.metric("Current Value", f"₹{current_value:,.2f}")
+        st.sidebar.metric("Profit / Loss", f"₹{total_pnl:,.2f}", f"{total_pnl_pct:.2f}%")
+
+        st.sidebar.dataframe(portfolio_df, use_container_width="stretch")
+    else:
+        st.sidebar.info("Portfolio empty hai.")
+else:
+    st.sidebar.info("No stocks added.")
+
+            # -----------------------------------
+# WATCHLIST SCANNER
+# -----------------------------------
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 👀 Watchlist Scanner")
+
+watch_df = pd.read_csv(WATCHLIST_FILE)
+
+signals = []
+
+for stock in watch_df["Symbol"]:
+    try:
+        symbol = str(stock).upper()
+
+        yf_symbol = symbol if symbol.endswith(".NS") else symbol + ".NS"
+
+        df = yf.Ticker(yf_symbol).history(period="6mo")
+
+        if len(df) < 50:
+            continue
+
+        delta = df["Close"].diff()
+        gain = delta.where(delta > 0, 0).rolling(14).mean()
+        loss = -delta.where(delta < 0, 0).rolling(14).mean()
+        rs = gain / loss
+        df["RSI"] = 100 - (100 / (1 + rs))
+        current = df["Close"].iloc[-1]
+        sma50 = df["Close"].rolling(50).mean().iloc[-1]
+        rsi = df["RSI"].iloc[-1]
+
+        signal = "HOLD"
+
+        score = 50
+
+        if current > sma50:
+            score += 20
+
+        if rsi < 70:
+            score += 15
+
+        if rsi > 40:
+            score += 15
+
+        if current > sma50 and rsi < 70:
+            signal = "BUY"
+
+        elif current < sma50 and rsi > 30:
+            signal = "AVOID"
+
+        signals.append({
+    "Stock": symbol,
+    "Price": round(current, 2),
+    "RSI": round(rsi, 1),
+    "Signal": signal,
+    "Score": score
+})
+
+    except:
+        pass
+
+if signals:
+
+    watchlist_table = pd.DataFrame(signals)
+
+    watchlist_table = watchlist_table.sort_values(
+        by="Score",
+        ascending=False
+    )
+
+    # --------------------------------
+# WATCHLIST BATTLE ROYALE
+# --------------------------------
+
+watchlist_table = []
+
+if len(watchlist_table) >= 3:
+
+    top1 = watchlist_table.iloc[0]
+    top2 = watchlist_table.iloc[1]
+    top3 = watchlist_table.iloc[2]
+
+    st.sidebar.markdown("### 🏆 Watchlist Battle Royale")
+
+    st.sidebar.success(
+        f"🥇 #1 {top1['Stock']} | Score: {top1['Score']}"
+    )
+
+    st.sidebar.info(
+        f"🥈 #2 {top2['Stock']} | Score: {top2['Score']}"
+    )
+
+    st.sidebar.warning(
+        f"🥉 #3 {top3['Stock']} | Score: {top3['Score']}"
+    )
+
+    st.sidebar.caption(
+        "AI ranked opportunities from your watchlist."
+    )
+
+    st.sidebar.dataframe(
+        watchlist_table,
+        use_container_width="stretch"
+    )
+
+    top_pick = watchlist_table.iloc[0]
+
+    oversold_stocks = watchlist_table[watchlist_table["RSI"] < 40]
+
+st.sidebar.markdown("### 🚨 Oversold Alerts")
+
+import pandas as pd
+
+oversold_stocks = pd.DataFrame()
+
+if not oversold_stocks.empty:
+    for _, row in oversold_stocks.iterrows():
+        st.sidebar.warning(
+            f"🚨 {row['Stock']} oversold zone me hai | RSI: {row['RSI']}"
+        )
+else:
+    st.sidebar.info("Abhi koi oversold opportunity nahi mili.")
+
+st.sidebar.markdown("### 🏆 Top Watchlist Pick")
+
+import pandas as pd
+
+if "top_pick" not in locals():
+    top_pick = {"Score": 0, "Stock": "N/A"}
+
+
+if top_pick["Score"] >= 80:
+    st.sidebar.success(
+        f"🟢 {top_pick['Stock']} strongest opportunity hai | Score: {top_pick['Score']}"
+    )
+elif top_pick["Score"] >= 60:
+    st.sidebar.info(
+        f"🟡 {top_pick['Stock']} decent watchlist pick hai | Score: {top_pick['Score']}"
+    )
+else:
+    st.sidebar.warning(
+        f"⚠️ Abhi strong opportunity nahi hai | Best: {top_pick['Stock']} | Score: {top_pick['Score']}"
+    )
+
+# -----------------------------------
+# AI PORTFOLIO ADVISOR
+# -----------------------------------
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 🧠 AI Portfolio Advisor")
+
+try:
+    if "portfolio_df" in locals() and not portfolio_df.empty:
+        best_stock = portfolio_df.sort_values("P/L %", ascending=False).iloc[0]
+        worst_stock = portfolio_df.sort_values("P/L %", ascending=True).iloc[0]
+
+        st.sidebar.success(
+            f"🏆 Best: {best_stock['Stock']} ({best_stock['P/L %']}%)"
+        )
+
+        st.sidebar.error(
+            f"⚠️ Weak: {worst_stock['Stock']} ({worst_stock['P/L %']}%)"
+        )
+
+        # Portfolio Health Score
+
+        health_score = 0
+
+        if len(portfolio_df) >= 3:
+            health_score += 30
+
+        if worst_stock["P/L %"] > -10:
+            health_score += 30
+
+        if best_stock["P/L %"] > 0:
+            health_score += 40
+
+        st.sidebar.markdown("### ❤️ Portfolio Health")
+
+        if health_score >= 80:
+            st.sidebar.success(f"{health_score}/100 Excellent")
+        elif health_score >= 60:
+            st.sidebar.info(f"{health_score}/100 Good")
+        elif health_score >= 40:
+            st.sidebar.warning(f"{health_score}/100 Average")
+        else:
+            st.sidebar.error(f"{health_score}/100 Weak")
+
+        if len(portfolio_df) < 3:
+            st.sidebar.warning("Diversification low hai. 3-5 stocks rakho.")
+        else:
+            st.sidebar.info("Portfolio diversification decent hai.")
+
+        if worst_stock["P/L %"] < -10:
+            st.sidebar.warning(
+                f"{worst_stock['Stock']} me loss high hai. Review karo."
+            )
+
+        if best_stock["P/L %"] > 10:
+            st.sidebar.success(
+                f"{best_stock['Stock']} strong performer hai. Hold/Trail SL."
+            )
+
+            # Portfolio Rebalancing Advisor
+        st.sidebar.markdown("### ⚖️ Rebalancing Advisor")
+
+        if worst_stock["P/L %"] < -10:
+            st.sidebar.warning(
+                f"📉 Reduce: {worst_stock['Stock']} exposure by 10-15%"
+            )
+
+        if best_stock["P/L %"] > 0:
+            st.sidebar.success(
+                f"📈 Increase/Hold: {best_stock['Stock']} strong hai"
+            )
+
+        if len(portfolio_df) < 5:
+            st.sidebar.info(
+                "🏦 Add 1-2 new sectors: Banking, FMCG, Auto ya Pharma"
+            )
+
+        st.sidebar.caption("Goal: loss control + diversification improve karna.")
+
+    else:
+        st.sidebar.info("Portfolio advisor ke liye stocks add karo.")
+
+except Exception as e:
+    st.sidebar.error(f"Advisor Error: {e}")
+
+    # -----------------------------------
+# MARKET MOOD INDEX
+# -----------------------------------
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 📊 Market Mood Index")
+
+try:
+    nifty = yf.Ticker("^NSEI").history(period="5d")
+
+    if not nifty.empty:
+        nifty_change = (
+            (nifty["Close"].iloc[-1] - nifty["Close"].iloc[-2])
+            / nifty["Close"].iloc[-2]
+        ) * 100
+
+        if nifty_change > 0.5:
+            st.sidebar.success(f"🟢 Bullish Market | NIFTY: {nifty_change:.2f}%")
+        elif nifty_change < -0.5:
+            st.sidebar.error(f"🔴 Bearish Market | NIFTY: {nifty_change:.2f}%")
+        else:
+            st.sidebar.warning(f"🟡 Sideways Market | NIFTY: {nifty_change:.2f}%")
+
+except Exception as e:
+    st.sidebar.info("Market mood data unavailable.")
+
+    # -----------------------------------
+# EXPORT REPORT
+# -----------------------------------
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 📄 Export Report")
+
+if "best_stock" not in locals():
+    best_stock = {"Stock": "N/A", "P/L %": 0}
+
+if "worst_stock" not in locals():
+    worst_stock = {"Stock": "N/A", "P/L %": 0}
+    
+if "best_stock" not in locals():
+    best_stock = {"Stock": "N/A", "P/L %": 0}
+
+if "worst_stock" not in locals():
+    worst_stock = {"Stock": "N/A", "P/L %": 0}
+
+if "portfolio_df" not in locals():
+    portfolio_df = []
+
+report = f"""
+BHARATFINAI REPORT
+
+Portfolio Health Score : {health_score}/100
+
+Best Stock : {best_stock['Stock']}
+Worst Stock : {worst_stock['Stock']}
+
+Diversification Status :
+{"Good" if len(portfolio_df)>=3 else "Low"}
+
+Generated by BharatFinAI
+"""
+
+st.sidebar.download_button(
+    label="📥 Download Report",
+    data=report,
+    file_name="bharatfinai_report.txt",
+    mime="text/plain"
+)
+with tab4:
+    st.markdown("### 📊 Phase 4 — Quant Systems")
+    q_symbol = st.text_input("Backtest Stock", value="RELIANCE", key="q_stock")
+    q_period = st.selectbox("Backtest Period", ["6mo", "1y", "2y", "5y"], index=1)
+
+    if st.button("Run Backtest"):
+        sym = q_symbol.upper()
+        yf_symbol = sym if sym.endswith(".NS") else sym + ".NS"
+        df = yf.Ticker(yf_symbol).history(period=q_period)
+
+        if df.empty:
+            st.error("Data nahi mila")
+        else:
+            df["SMA20"] = df["Close"].rolling(20).mean()
+            df["SMA50"] = df["Close"].rolling(50).mean()
+
+            df["Signal"] = 0
+            df.loc[df["SMA20"] > df["SMA50"], "Signal"] = 1
+            df.loc[df["SMA20"] <= df["SMA50"], "Signal"] = 0
+
+            df["Return"] = df["Close"].pct_change()
+            df["Strategy"] = df["Signal"].shift(1) * df["Return"]
+
+            # Trade Statistics
+
+            trade_changes = df["Signal"].diff().fillna(0)
+
+            total_trades = int((trade_changes != 0).sum())
+
+            winning_trades = int(
+                ((df["Strategy"] > 0) & (trade_changes != 0)).sum()
+            )
+
+            win_rate = (
+                winning_trades / total_trades * 100
+                if total_trades > 0
+                else 0
+            )
+
+            total_return = (1 + df["Strategy"].fillna(0)).prod() - 1
+            days = (df.index[-1] - df.index[0]).days
+
+            cagr = (
+                ((1 + total_return) ** (365 / days) - 1) * 100
+                if days > 0
+                else 0
+            )
+
+            rolling_max = df["Close"].cummax()
+            drawdown = (df["Close"] - rolling_max) / rolling_max
+
+            max_drawdown = abs(drawdown.min()) * 100
+
+            calmar = (
+                cagr / max_drawdown
+                if max_drawdown != 0
+                else 0
+            )
+
+            buy_hold = (
+                (df["Close"].dropna().iloc[-1] /
+                df["Close"].dropna().iloc[0]) - 1
+            )
+
+            nifty = yf.Ticker("^NSEI").history(period=q_period)
+
+            if not nifty.empty:
+                nifty = nifty.reindex(df.index).ffill()
+
+                nifty_return = (
+                    nifty["Close"].dropna().iloc[-1] /
+                    nifty["Close"].dropna().iloc[0]
+                ) - 1
+            else:
+                nifty_return = 0
+
+            sharpe = (
+                df["Strategy"].mean() / df["Strategy"].std() * (252 ** 0.5)
+                if df["Strategy"].std() != 0 else 0
+            )
+
+            downside = df[df["Strategy"] < 0]["Strategy"].std()
+
+            sortino = (
+                df["Strategy"].mean() / downside * (252 ** 0.5)
+                if downside != 0 and not pd.isna(downside)
+                else 0
+            )
+
+            # Value at Risk (95%)
+            var_95 = np.percentile(df["Strategy"].dropna(), 5) * 100
+
+            # Conditional VaR (Expected Shortfall)
+            cvar_95 = (
+                df["Strategy"][df["Strategy"] <= np.percentile(df["Strategy"].dropna(), 5)]
+                .mean() * 100
+            )
+
+            c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12 = st.columns(12)
+            c1.metric(
+                "Strategy Return",
+                f"{total_return*100:.2f}%"
+            )
+
+            c2.metric(
+                "Buy & Hold",
+                f"{buy_hold*100:.2f}%"
+            )
+
+            c3.metric(
+                "Sharpe Ratio",
+                f"{sharpe:.2f}"
+            )
+
+            c4.metric(
+                "Win Rate",
+                f"{win_rate:.1f}%"
+            )
+
+            c5.metric(
+                "Trades",
+                total_trades
+            )
+
+            c6.metric(
+                "CAGR",
+                f"{cagr:.2f}%"
+            )
+
+            c7.metric(
+                "Sortino",
+                f"{sortino:.2f}"
+            )
+
+            c8.metric(
+                "Calmar",
+                f"{calmar:.2f}"
+            )
+
+            rolling_max = df["Close"].cummax()
+
+            drawdown = (
+                (df["Close"] - rolling_max)
+                / rolling_max
+            )
+
+            max_drawdown = abs(drawdown.min()) * 100
+
+            c9.metric(
+                "NIFTY50",
+                f"{nifty_return*100:.2f}%"
+            )
+
+            c10.metric(
+                "Max DD",
+                f"{max_drawdown:.2f}%"
+            )
+
+            c11.metric(
+                "VaR 95%",
+                f"{var_95:.2f}%"
+            )
+
+            c12.metric(
+                "CVaR 95%",
+                f"{cvar_95:.2f}%"
+            )
+
+            df["Equity Curve"] = (1 + df["Strategy"].fillna(0)).cumprod()
+            df["Buy Hold Curve"] = df["Close"] / df["Close"].iloc[0]
+
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=df.index, y=df["Equity Curve"], name="Strategy"))
+            fig.add_trace(go.Scatter(x=df.index, y=df["Buy Hold Curve"], name="Buy & Hold"))
+            if not nifty.empty:
+                    nifty["NIFTY Curve"] = nifty["Close"] / nifty["Close"].dropna().iloc[0]
+
+            fig.add_trace(
+                go.Scatter(
+                    x=df.index,
+                    y=nifty["NIFTY Curve"],
+                    name="NIFTY50"
+                )
+            )
+            fig.update_layout(template="plotly_dark", title="Backtest Equity Curve")
+            st.plotly_chart(fig, use_container_width="stretch")
+
+            st.dataframe(df[["Close", "SMA20", "SMA50", "Signal", "Return", "Strategy"]].tail(20))
+with tab5:
+
+            st.markdown("## 🎲 Monte Carlo Simulation")
+
+            mc_symbol = st.text_input(
+                "Stock Symbol",
+                value="RELIANCE",
+                key="mc_stock"
+            )
+
+            mc_period = st.selectbox(
+                "Period",
+                ["6mo", "1y", "2y", "5y"],
+                index=1,
+                key="mc_period"
+            )
+
+            simulations = st.slider(
+                "Simulations",
+                100,
+                5000,
+                1000,
+                step=100
+            )
+
+            if st.button("Run Monte Carlo"):
+
+                import numpy as np
+
+                symbol = mc_symbol.upper()
+                yf_symbol = symbol if symbol.endswith(".NS") else symbol + ".NS"
+
+                df = yf.Ticker(yf_symbol).history(period=mc_period)
+
+                if df.empty:
+                    st.error("Data nahi mila")
+                else:
+
+                    returns = df["Close"].pct_change().dropna()
+
+                    mu = returns.mean()
+                    sigma = returns.std()
+
+                    start_price = df["Close"].iloc[-1]
+
+                    future_days = 252
+
+                    paths = np.zeros((future_days, simulations))
+
+                    for i in range(simulations):
+
+                        prices = [start_price]
+
+                        for _ in range(future_days):
+                            shock = np.random.normal(mu, sigma)
+                            prices.append(prices[-1] * (1 + shock))
+
+                        paths[:, i] = prices[1:]
+
+                    fig = go.Figure()
+
+                    for i in range(min(100, simulations)):
+                        fig.add_trace(
+                            go.Scatter(
+                                y=paths[:, i],
+                                mode="lines",
+                                line=dict(width=1),
+                                showlegend=False
+                            )
+                        )
+
+                    fig.update_layout(
+                        template="plotly_dark",
+                        title="Monte Carlo Future Price Paths"
+                    )
+
+                    st.plotly_chart(fig, use_container_width="stretch")
+
+                    final_prices = paths[-1]
+
+                    st.metric(
+                        "Expected Price",
+                        f"₹{final_prices.mean():.2f}"
+                    )
+
+                    st.metric(
+                        "Best Case",
+                        f"₹{final_prices.max():.2f}"
+                    )
+
+                    st.metric(
+                        "Worst Case",
+                        f"₹{final_prices.min():.2f}"
+                    )
+with tab6:
+
+            st.markdown("## 🛡️ Risk Engine (VaR)")
+
+            risk_symbol = st.text_input(
+                "Stock Symbol",
+                value="RELIANCE",
+                key="risk_stock"
+            ).strip().upper()
+
+            risk_period = st.selectbox(
+                "Period",
+                ["6mo", "1y", "2y", "5y"],
+                index=1,
+                key="risk_period"
+            )
+
+            investment = st.number_input(
+                "Investment Amount (₹)",
+                min_value=1000,
+                value=100000,
+                step=1000,
+                key="risk_investment"
+            )
+
+            if st.button("Calculate Risk", key="calculate_risk_btn"):
+                import numpy as np
+
+                clean_symbol = risk_symbol.replace(" ", "").replace("$", "")
+                yf_symbol = clean_symbol if clean_symbol.endswith(".NS") else clean_symbol + ".NS"
+
+                st.info(f"Fetching data for: {yf_symbol}")
+
+                df = yf.Ticker(yf_symbol).history(period=risk_period)
+
+                if df.empty:
+                    st.error("Data nahi mila. Symbol check karo. Example: RELIANCE, TCS, INFY, SBIN")
+                else:
+                    returns = df["Close"].pct_change().dropna()
+
+                    if returns.empty:
+                        st.error("Enough price data nahi mila risk calculate karne ke liye.")
+                    else:
+                        var95 = np.percentile(returns, 5)
+                        var99 = np.percentile(returns, 1)
+
+                        loss95 = investment * abs(var95)
+                        loss99 = investment * abs(var99)
+
+                        volatility = returns.std() * np.sqrt(252) * 100
+
+                        cumulative = (1 + returns).cumprod()
+                        rolling_max = cumulative.cummax()
+                        drawdown = ((cumulative - rolling_max) / rolling_max).min() * 100
+
+                        c1, c2, c3 = st.columns(3)
+
+                        c1.metric("VaR 95%", f"₹{loss95:,.0f}")
+                        c2.metric("VaR 99%", f"₹{loss99:,.0f}")
+                        c3.metric("Volatility", f"{volatility:.2f}%")
+
+                        st.metric("Maximum Drawdown", f"{drawdown:.2f}%")
+
+                        if volatility < 20:
+                            risk_score = "LOW RISK 🟢"
+                        elif volatility < 35:
+                            risk_score = "MEDIUM RISK 🟡"
+                        else:
+                            risk_score = "HIGH RISK 🔴"
+
+                        st.success(f"Risk Classification: {risk_score}")
+
+                        st.info(
+                            f"""
+₹{investment:,.0f} investment par:
+
+- 95% confidence par ek din me approx ₹{loss95:,.0f} se jyada loss expected nahi.  
+- 99% confidence par approx ₹{loss99:,.0f} se jyada loss expected  nahi.
+                            """
+                        )
+
+with tab7:
+    st.markdown("## 📊 Portfolio Optimizer")
+
+    investment = st.number_input(
+        "Investment Amount (₹)",
+        min_value=1000,
+        value=50000
+    )
+
+    risk_profile = st.selectbox(
+        "Risk Profile",
+        ["Low", "Medium", "High"]
+    )
+
+    horizon = st.selectbox(
+        "Investment Horizon",
+        ["1 Year", "3 Years", "5 Years", "10 Years"]
+    )
+
+    stock_input = st.text_area(
+        "Stocks (comma separated)",
+        value="RELIANCE,TCS,HDFCBANK,INFY,SBIN"
+    )
+
+    st.button("Optimize Portfolio", key="test_btn")
+
+    import numpy as np
+
+    symbols = [s.strip().upper().replace("$", "")for s in stock_input.split(",")if s.strip()]
+    price_data = pd.DataFrame()
+
+    for sym in symbols:
+        yf_symbol = sym if sym.endswith(".NS") else sym + ".NS"
+
+        try:
+            data = yf.Ticker(yf_symbol).history(period="1y")
+            if not data.empty:
+                price_data[sym] = data["Close"]
+        except Exception as e:
+            st.warning(f"{sym} skipped: {e}")
+
+    price_data = price_data.dropna()
+    st.write("Stocks Found:", symbols)
+
+    if len(price_data.columns) < 2:
+        st.error("Kam se kam 2 valid stocks chahiye")
+    else:
+
+        returns = price_data.pct_change().dropna()
+
+        corr_matrix = returns.corr()
+
+        mean_returns = returns.mean() * 252
+        cov_matrix = returns.cov() * 252
+
+        n = len(price_data.columns)
+
+        portfolio_returns = []
+        portfolio_risks = []
+        portfolio_sharpes = []
+
+        best_sharpe = -999
+        best_weights = None
+
+        if risk_profile == "Low":
+            max_weight = 0.30
+        elif risk_profile == "Medium":
+            max_weight = 0.50
+        else:
+            max_weight = 0.80
+
+
+        max_weight = (max(max_weight, 1 / n) + 0.1)
+
+        for _ in range(5000):
+
+            weights = np.random.random(n)
+            weights /= np.sum(weights)
+
+            if np.max(weights) > max_weight:
+                continue
+
+            portfolio_return = np.sum(mean_returns * weights)
+
+            portfolio_risk = np.sqrt(
+                np.dot(weights.T,
+                    np.dot(cov_matrix, weights))
+            )
+
+            sharpe = portfolio_return / portfolio_risk
+
+            portfolio_returns.append(portfolio_return)
+
+            portfolio_risks.append(portfolio_risk)
+
+            portfolio_sharpes.append(sharpe)
+
+            if sharpe > best_sharpe:
+                best_sharpe = sharpe
+                best_weights = weights
+                best_return = portfolio_return
+                best_risk = portfolio_risk
+
+        # Efficient Frontier
+
+        frontier_df = pd.DataFrame({
+            "Risk": portfolio_risks,
+            "Return": portfolio_returns,
+            "Sharpe": portfolio_sharpes
+        })
+
+        fig_frontier = go.Figure()
+
+        fig_frontier.add_trace(
+            go.Scatter(
+                x=frontier_df["Risk"],
+                y=frontier_df["Return"],
+                mode="markers",
+                marker=dict(
+                    size=5,
+                    color=frontier_df["Sharpe"],
+                    colorscale="Viridis",
+                    showscale=True
+                ),
+                name="Portfolios"
+            )
+        )
+
+        fig_frontier.add_trace(
+            go.Scatter(
+                x=[max(portfolio_risks)],
+                y=[max(portfolio_returns)],
+                mode="markers",
+                marker=dict(size=14, color="red"),
+                name="Max Return"
+            )
+        )
+
+        fig_frontier.update_layout(
+            template="plotly_dark",
+            title="Efficient Frontier",
+            xaxis_title="Risk",
+            yaxis_title="Return"
+        )
+
+        st.plotly_chart(fig_frontier, use_container_width="stretch")
+
+        result_df = pd.DataFrame({
+            "Stock": price_data.columns,
+            "Allocation %":
+                np.round(best_weights * 100, 2)
+        })
+
+        result_df["Investment Amount (₹)"] = (
+            result_df["Allocation %"] / 100
+        ) * investment
+
+        st.dataframe(result_df)
+        st.subheader("🏦 Sector Concentration Risk")
+
+        sector_map = {
+            "RELIANCE": "Energy",
+            "TCS": "IT",
+            "INFY": "IT",
+            "HDFCBANK": "Banking",
+            "SBIN": "Banking",
+            "ICICIBANK": "Banking",
+            "WIPRO": "IT",
+            "MARUTI": "Auto",
+            "SUNPHARMA": "Pharma",
+            "ITC": "FMCG"
+        }
+
+        result_df["Sector"] = result_df["Stock"].map(sector_map).fillna("Unknown")
+
+        sector_df = (
+            result_df.groupby("Sector")["Allocation %"]
+            .sum()
+            .reset_index()
+        )
+
+        st.dataframe(sector_df)
+
+        fig_sector = px.pie(
+            sector_df,
+            values="Allocation %",
+            names="Sector",
+            title="Sector Exposure"
+        )
+
+        st.plotly_chart(fig_sector, use_container_width="stretch")
+
+        max_sector = sector_df.loc[sector_df["Allocation %"].idxmax()]
+
+        if max_sector["Allocation %"] > 50:
+            st.error(f"⚠ Overexposure detected in {max_sector['Sector']} sector ({max_sector['Allocation %']:.1f}%)")
+        elif max_sector["Allocation %"] > 35:
+            st.warning(f"⚠ Moderate concentration in {max_sector['Sector']} sector ({max_sector['Allocation %']:.1f}%)")
+        else:
+            st.success("✅ Sector diversification looks healthy")
+        fig_pie = px.pie(
+            result_df,
+            names="Stock",
+            values="Allocation %",
+            title="Portfolio Allocation"
+        )
+
+        st.plotly_chart(fig_pie, use_container_width="stretch")
+
+        st.subheader("📊 Correlation Heatmap")
+
+        try:
+            corr_matrix = returns.corr()
+
+            fig, ax = plt.subplots(figsize=(8,6))
+
+            sns.heatmap(
+                corr_matrix,
+                annot=True,
+                cmap="coolwarm",
+                center=0,
+                ax=ax
+            )
+
+            st.pyplot(fig)
+
+        except Exception as e:
+            st.warning("Correlation Heatmap unavailable.")
+
+        st.subheader("🎯 Diversification Score")
+
+        avg_corr = corr_matrix.abs().mean().mean()
+
+        div_score = int((1 - avg_corr) * 100)
+
+        div_score = max(0, min(100, div_score))
+
+        st.metric("Diversification Score", f"{div_score}/100")
+
+        if div_score >= 80:
+            st.success("✅ Excellent Diversification")
+        elif div_score >= 60:
+            st.info("🟢 Good Diversification")
+        elif div_score >= 40:
+            st.warning("⚠ Moderate Diversification")
+        else:
+            st.error("🚨 Poor Diversification - Highly Correlated Portfolio")
+
+        csv = result_df.to_csv(index=False)
+
+        st.download_button(
+            label="📥 Download Portfolio CSV",
+            data=csv,
+            file_name="bharatfin_portfolio.csv",
+            mime="text/csv"
+        )
+
+        st.subheader("📉 CVaR Risk Analysis")
+
+        portfolio_returns = returns.mean(axis=1)
+
+        var95 = np.percentile(
+            portfolio_returns,
+            5
+        )
+
+        cvar95 = portfolio_returns[
+            portfolio_returns <= var95
+        ].mean()
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.metric(
+                "VaR 95%",
+                f"{var95:.2%}"
+            )
+
+        with col2:
+            st.metric(
+                "CVaR 95%",
+                f"{cvar95:.2%}"
+            )
+
+        if cvar95 < -0.03:
+            st.error(
+                "🚨 Crash scenario risk is HIGH"
+            )
+        else:
+            st.success(
+                "✅ Crash scenario risk is acceptable"
+            )
+
+        st.plotly_chart(fig_pie, use_container_width="stretch", key="portfolio_allocation_pie_1")
+
+        st.subheader("📉 Drawdown Risk Monitor")
+
+        portfolio_returns = returns.mean(axis=1)
+
+        cumulative = (
+            1 + portfolio_returns
+        ).cumprod()
+
+        rolling_max = cumulative.cummax()
+
+        drawdown = (
+            cumulative - rolling_max
+        ) / rolling_max
+
+        max_drawdown = drawdown.min()
+
+        st.metric(
+            "Max Drawdown",
+            f"{max_drawdown:.2%}"
+        )
+
+        fig_dd = px.line(
+            drawdown,
+            title="Portfolio Drawdown"
+        )
+
+        st.plotly_chart(
+            fig_dd,
+            use_container_width="stretch"
+        )
+
+        if max_drawdown < -0.20:
+            st.error(
+                "🚨 Severe drawdown risk detected"
+            )
+        elif max_drawdown < -0.10:
+            st.warning(
+                "⚠ Moderate drawdown risk"
+            )
+        else:
+            st.success(
+                "✅ Drawdown risk under control"
+            )
+
+        exp_return = np.sum(
+            mean_returns * best_weights
+        ) * 100
+
+        exp_risk = np.sqrt(
+            np.dot(best_weights.T,
+                np.dot(cov_matrix,
+                        best_weights))
+        ) * 100
+
+        c1, c2, c3 = st.columns(3)
+
+        c1.metric(
+            "Expected Return",
+            f"{exp_return:.2f}%"
+        )
+
+        c2.metric(
+            "Portfolio Risk",
+            f"{exp_risk:.2f}%"
+        )
+
+        c3.metric(
+            "Sharpe Ratio",
+            f"{best_sharpe:.2f}"
+        )
+
+        st.subheader("🧪 Stress Testing Engine")
+
+        stress_results = {
+            "NIFTY Crash (-10%)": -10,
+            "Banking Crash (-15%)": -15,
+            "IT Crash (-20%)": -20,
+            "Market Crash (-30%)": -30
+        }
+
+        for scenario, shock in stress_results.items():
+
+            portfolio_loss = (
+                result_df["Allocation %"].sum()
+                * abs(shock)
+                / 100
+            )
+
+            st.write(
+                f"{scenario} → Portfolio Loss: -{portfolio_loss:.2f}%"
+            )
+
+        if portfolio_loss > 20:
+            st.error(
+                "🚨 High Stress Risk"
+            )
+        elif portfolio_loss > 10:
+            st.warning(
+                "⚠ Moderate Stress Risk"
+            )
+        else:
+            st.success(
+                "✅ Stress Test Passed"
+            )
+
+        st.success(
+            "🏆 Maximum Sharpe Ratio Portfolio Found"
+        )
+
+        st.subheader("🧠 AI Risk Diagnosis")
+
+        issues = []
+
+        if best_sharpe < 0:
+            issues.append(
+                "❌ Negative Sharpe Ratio - Risk ke hisab se return weak hai"
+            )
+
+        if max_drawdown < -0.20:
+            issues.append(
+                "❌ High Drawdown Risk (>20%)"
+            )
+
+        for _, row in sector_df.iterrows():
+            if row["Allocation %"] > 50:
+                issues.append(
+                    f"❌ Overexposed to {row['Sector']} sector ({row['Allocation %']:.1f}%)"
+                )
+
+        if len(issues) == 0:
+            st.success(
+                "✅ Portfolio looks healthy"
+            )
+        else:
+            for item in issues:
+                st.warning(item)
+
+                st.subheader("💡 AI Recommendations")
+
+        if best_sharpe < 0:
+            st.info(
+                "Increase diversification and reduce weak-performing assets."
+            )
+
+        if max_drawdown < -0.20:
+            st.info(
+                "Add defensive sectors like FMCG and Pharma."
+            )
+
+        for _, row in sector_df.iterrows():
+            if row["Allocation %"] > 50:
+                st.info(
+                    f"Reduce exposure to {row['Sector']} sector."
+                )
+
+        st.subheader("🏆 Portfolio Health Score")
+
+        st.markdown("## 🔄 AI Rebalancing Suggestions")
+
+        top_stock = result_df.loc[
+            result_df["Allocation %"].idxmax(),
+            "Stock"
+        ]
+
+        top_alloc = result_df["Allocation %"].max()
+
+        suggestions = []
+
+        if top_alloc > 50:
+            suggestions.append(
+                f"⚠ Reduce {top_stock} allocation ({top_alloc:.2f}%)"
+            )
+
+        if portfolio_risk > 0.20:
+            suggestions.append(
+                "⚠ Portfolio risk is high. Add defensive stocks."
+            )
+
+        sharpe_ratio = best_sharpe
+        if sharpe_ratio < 0.5:
+            suggestions.append(
+                "📈 Consider adding ITC, HINDUNILVR, ICICIBANK for diversification."
+            )
+
+        expected_return = best_return
+        if expected_return > best_risk:
+            suggestions.append(
+                "✅ Risk-reward profile looks healthy."
+            )
+
+
+        score = 100
+
+        if best_sharpe < 0:
+            score -= 25
+
+        if max_drawdown < -0.20:
+            score -= 25
+
+        if max_sector["Allocation %"] > 50:
+            score -= 20
+
+        if exp_return < 0:
+            score -= 15
+
+        score = max(0, min(100, score))
+
+        if score >= 80:
+            st.success("✅ Portfolio is already well balanced.")
+        elif score >= 60:
+            st.info("🟡 Portfolio needs minor optimization.")
+        elif score >= 40:
+            st.warning("⚠ Portfolio needs rebalancing.")
+        else:
+            st.error("🚨 Immediate rebalancing required.")
+
+        if score >= 80:
+            st.success("🚀 Excellent Portfolio")
+        elif score >= 60:
+            st.info("🟡 Good Portfolio")
+        elif score >= 40:
+            st.warning("⚠️ Average Portfolio")
+        else:
+            st.error("❌ Weak Portfolio")
+
+
+        st.subheader("🤖 AI Portfolio Advisor")
+
+        if best_sharpe > 1:
+            st.success("Excellent risk-adjusted portfolio.")
+        elif best_sharpe > 0.5:
+            largest_stock = result_df.loc[
+                result_df["Allocation %"].idxmax()
+            ]
+
+            st.info(
+                f"""
+            📊 Highest Allocation: {largest_stock['Stock']} ({largest_stock['Allocation %']:.2f}%)
+
+            📈 Expected Return: {exp_return:.2f}%
+
+            ⚠️ Portfolio Risk: {exp_risk:.2f}%
+
+            🎯 Sharpe Ratio: {best_sharpe:.2f}
+            """
+            )
+        else:
+            st.warning("Portfolio risk jyada hai compared to expected return.")
+
+            st.subheader("🎲 Monte Carlo Simulation")
+
+        simulations = 1000
+        days = 252
+
+        portfolio_returns = returns.mean(axis=1)
+
+        sim_results = []
+
+        for _ in range(simulations):
+            simulated = np.random.choice(
+                portfolio_returns,
+                size=days,
+                replace=True
+            )
+            sim_results.append((1 + simulated).prod())
+
+        fig_mc = px.histogram(
+            x=sim_results,
+            nbins=40,
+            title="Monte Carlo Portfolio Outcomes"
+        )
+
+        st.plotly_chart(
+            fig_mc,
+            use_container_width="stretch",
+            key="monte_carlo_sim"
+        )
+
+        st.metric(
+            "Expected Portfolio Growth",
+            f"{(np.mean(sim_results)-1)*100:.2f}%"
+        )
+
+        st.subheader("📌 Executive Risk Dashboard")
+
+        risk_flags = 0
+
+        if best_sharpe < 0:
+            risk_flags += 1
+
+        if max_drawdown < -0.20:
+            risk_flags += 1
+
+        if max_sector["Allocation %"] > 50:
+            risk_flags += 1
+
+        if score < 40:
+            risk_flags += 1
+
+        if risk_flags >= 3:
+            final_risk = "HIGH RISK 🔴"
+            grade = "D"
+        elif risk_flags == 2:
+            final_risk = "MEDIUM RISK 🟡"
+            grade = "C"
+        elif risk_flags == 1:
+            final_risk = "LOW-MEDIUM RISK 🟠"
+            grade = "B"
+        else:
+            final_risk = "LOW RISK 🟢"
+            grade = "A"
+
+        c1, c2, c3 = st.columns(3)
+
+        c1.metric("Final Risk Level", final_risk)
+        c2.metric("Portfolio Grade", grade)
+        c3.metric("Risk Flags", risk_flags)
+
+        if grade in ["D", "C"]:
+            st.error("Portfolio needs active risk management before investing more.")
+        else:
+            st.success("Portfolio risk profile looks acceptable.")
+
+        st.subheader("📈 Buy / Sell Signal Engine")
+        for stock in result_df["Stock"]:
+
+            hist = yf.Ticker(f"{stock}.NS").history(period="3mo")["Close"]
+            delta = hist.diff()
+            gain = delta.where(delta > 0, 0).rolling(14).mean()
+            loss = -delta.where(delta < 0, 0).rolling(14).mean()
+            rs = gain / loss
+            rsi = 100 - (100 / (1 + rs)).iloc[-1]
+
+            if rsi < 30:
+                st.success(f"🟢 {stock}: BUY Signal (RSI={rsi:.1f})")
+
+            elif rsi > 70:
+                st.error(f"🔴 {stock}: SELL Signal (RSI={rsi:.1f})")
+
+            else:
+                st.info(f"🟡 {stock}: HOLD Signal (RSI={rsi:.1f})")
+
+        st.subheader("🏆 Stock Ranking Engine")
+
+        ranking_df = result_df.copy()
+
+        ranking_df["Rank"] = ranking_df["Allocation %"].rank(
+            ascending=False
+        )
+
+        ranking_df = ranking_df.sort_values(
+            "Rank"
+        )
+
+        st.dataframe(
+            ranking_df[
+                ["Stock", "Allocation %", "Rank"]
+            ],
+            use_container_width="stretch"
+        )
+
