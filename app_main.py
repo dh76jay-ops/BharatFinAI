@@ -1095,6 +1095,43 @@ def analyze_news_items(items):
     return analyzed
 
 
+# Ticker -> company display-name variants, jo headlines me actually use hote hain.
+# NewsAPI ka "reliance" jaisa common-English-word ticker ke saath galat match na kare,
+# isliye company ka pura naam bhi include kiya hai jahan pata hai.
+_TICKER_NAME_VARIANTS = {
+    "RELIANCE": ["Reliance Industries", "RIL"],
+    "TCS": ["Tata Consultancy"],
+    "INFY": ["Infosys"],
+    "HDFCBANK": ["HDFC Bank"],
+    "ICICIBANK": ["ICICI Bank"],
+    "SBIN": ["SBI", "State Bank of India"],
+    "KOTAKBANK": ["Kotak Mahindra Bank"],
+    "TATAMOTORS": ["Tata Motors"],
+    "MARUTI": ["Maruti Suzuki"],
+    "SUNPHARMA": ["Sun Pharma"],
+    "ITC": ["ITC Limited"],
+    "HINDUNILVR": ["Hindustan Unilever", "HUL"],
+    "WIPRO": ["Wipro"],
+    "HCLTECH": ["HCL Technologies", "HCLTech"],
+    "ADANIENT": ["Adani Enterprises"],
+}
+
+_NEWS_FINANCE_TERMS = (
+    "stock OR shares OR share OR NSE OR BSE OR results OR profit OR revenue "
+    "OR earnings OR Q1 OR Q2 OR Q3 OR Q4"
+)
+
+
+def _relevance_filter(items, base_symbol):
+    """Extra safety net: sirf wo articles rakho jinke title me genuinely company ka naam ho."""
+    variants = [base_symbol] + _TICKER_NAME_VARIANTS.get(base_symbol, [])
+    variants_low = [v.lower() for v in variants]
+    return [
+        a for a in items
+        if any(v in a["title"].lower() for v in variants_low)
+    ]
+
+
 def _normalize_news_articles(resp):
     items = []
     seen = set()
@@ -1118,8 +1155,13 @@ def _fetch_news_cached(base_symbol):
     # Error pe exception raise hota hai, taaki failed result cache na ho
     client = NewsApiClient(api_key=os.getenv("NEWS_API_KEY"))
 
+    name_variants = [base_symbol] + _TICKER_NAME_VARIANTS.get(base_symbol, [])
+    name_query = " OR ".join(f'"{v}"' for v in name_variants)
+
     company_resp = client.get_everything(
-        q=f'"{base_symbol}" AND (stock OR shares OR NSE OR BSE OR India)',
+        # qInTitle: company ka naam HEADLINE me hona chahiye (body/description me nahi) —
+        # isse "reliance" jaisa common word body me use hone se false-match nahi hoga.
+        qintitle=f"({name_query}) AND ({_NEWS_FINANCE_TERMS})",
         language="en", sort_by="publishedAt", page_size=20
     )
     if company_resp.get("status") != "ok":
@@ -1136,7 +1178,9 @@ def _fetch_news_cached(base_symbol):
     except Exception:
         market_articles = []
 
-    return {"company": _normalize_news_articles(company_resp), "market": market_articles}
+    company_items = _relevance_filter(_normalize_news_articles(company_resp), base_symbol)
+
+    return {"company": company_items, "market": market_articles}
 
 
 def fetch_news_bundle(stock_symbol):
