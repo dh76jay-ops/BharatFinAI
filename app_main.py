@@ -6309,6 +6309,245 @@ with tab4:
             st.plotly_chart(fig, use_container_width="stretch")
 
             st.dataframe(df[["Close", "SMA20", "SMA50", "Signal", "Return", "Strategy"]].tail(20))
+            st.divider()
+    st.markdown("### 🧮 Multi-Stock Quant Engine")
+    st.caption(
+        "Correlation, Beta/Alpha (CAPM), Regression trend, aur return distribution stats — "
+        "multiple stocks ko NIFTY ke against compare karne ke liye."
+    )
+
+    qt_stock_input = st.text_area(
+        "Stocks (comma separated)",
+        value="RELIANCE,TCS,HDFCBANK,INFY",
+        key="qt_stocks"
+    )
+
+    qt_period = st.selectbox(
+        "Period",
+        ["6mo", "1y", "2y", "5y"],
+        index=1,
+        key="qt_period"
+    )
+
+    if st.button("🔎 Run Quant Analysis", key="qt_run_btn"):
+
+        qt_symbols = [s.strip().upper() for s in qt_stock_input.split(",") if s.strip()]
+
+        if len(qt_symbols) < 2:
+            st.warning("⚠️ Kam se kam 2 stocks daalo (comma-separated).")
+        else:
+            with st.spinner("Data fetch ho raha hai..."):
+
+                qt_prices = pd.DataFrame()
+
+                for qt_s in qt_symbols:
+                    qt_yf_sym = qt_s if qt_s.endswith(".NS") else qt_s + ".NS"
+                    try:
+                        qt_hist = yf.Ticker(qt_yf_sym).history(period=qt_period)
+                        if not qt_hist.empty:
+                            qt_prices[qt_s] = qt_hist["Close"]
+                    except Exception:
+                        continue
+
+                try:
+                    qt_nifty_hist = yf.Ticker("^NSEI").history(period=qt_period)
+                    if not qt_nifty_hist.empty:
+                        qt_prices["NIFTY"] = qt_nifty_hist["Close"]
+                except Exception:
+                    pass
+
+                qt_prices = qt_prices.dropna()
+
+            if "NIFTY" not in qt_prices.columns or qt_prices.shape[1] < 3:
+                st.error("❌ Sufficient overlapping data nahi mila (NIFTY ya stocks ka data missing/mismatched dates).")
+            else:
+
+                qt_returns = qt_prices.pct_change().dropna()
+                qt_valid_symbols = [s for s in qt_symbols if s in qt_prices.columns]
+
+                # ─────────────────────────────────────────
+# CORRELATION MATRIX
+# ─────────────────────────────────────────
+
+                st.markdown("#### 🔗 Correlation Matrix (Daily Returns)")
+
+                qt_corr = qt_returns.corr()
+
+                fig_qt_corr = px.imshow(
+                    qt_corr,
+                    text_auto=".2f",
+                    color_continuous_scale="RdBu",
+                    zmin=-1, zmax=1,
+                    title="Correlation Heatmap"
+                )
+
+                st.plotly_chart(fig_qt_corr, use_container_width="stretch", key="qt_corr_heatmap")
+
+                qt_high_corr_pairs = []
+                for i in range(len(qt_valid_symbols)):
+                    for j in range(i + 1, len(qt_valid_symbols)):
+                        qt_s1, qt_s2 = qt_valid_symbols[i], qt_valid_symbols[j]
+                        qt_c = qt_corr.loc[qt_s1, qt_s2]
+                        if abs(qt_c) > 0.8:
+                            qt_high_corr_pairs.append(f"{qt_s1}-{qt_s2} ({qt_c:.2f})")
+
+                if qt_high_corr_pairs:
+                    st.warning(
+                        "⚠️ High correlation (>0.8) pairs mile — "
+                        "diversification benefit kam ho sakta hai: " + ", ".join(qt_high_corr_pairs)
+                    )
+                else:
+                    st.success("✅ Koi extreme high-correlation pair (>0.8) nahi mila — reasonable diversification hai.")
+
+                # ─────────────────────────────────────────
+# BETA / ALPHA (CAPM REGRESSION)
+# ─────────────────────────────────────────
+
+                st.markdown("#### 📐 Beta / Alpha (CAPM vs NIFTY)")
+
+                qt_capm_rows = []
+
+                for qt_s in qt_valid_symbols:
+                    qt_x = qt_returns["NIFTY"].values
+                    qt_y = qt_returns[qt_s].values
+
+                    qt_slope, qt_intercept = np.polyfit(qt_x, qt_y, 1)
+                    qt_y_pred = qt_slope * qt_x + qt_intercept
+                    qt_ss_res = np.sum((qt_y - qt_y_pred) ** 2)
+                    qt_ss_tot = np.sum((qt_y - qt_y.mean()) ** 2)
+                    qt_r2 = 1 - (qt_ss_res / qt_ss_tot) if qt_ss_tot != 0 else 0
+
+                    qt_annual_alpha = qt_intercept * 252 * 100
+
+                    qt_capm_rows.append({
+                        "Stock": qt_s,
+                        "Beta": round(qt_slope, 2),
+                        "Alpha (Annualized %)": round(qt_annual_alpha, 2),
+                        "R² (Fit Quality)": round(qt_r2, 3),
+                    })
+
+                qt_capm_df = pd.DataFrame(qt_capm_rows)
+
+                st.dataframe(qt_capm_df, use_container_width=True, hide_index=True)
+
+                st.caption(
+                    "Beta > 1 = market se zyada volatile. Alpha > 0 = market-adjusted excess return positive hai. "
+                    "R² kam ho (<0.3) to iska matlab stock ka movement NIFTY se zyada explain nahi hota — "
+                    "stock-specific factors zyada matter karte hain."
+                )
+
+                # ─────────────────────────────────────────
+# ROLLING BETA (stability check)
+# ─────────────────────────────────────────
+
+                st.markdown("#### 📉 Rolling Beta (60-day window)")
+
+                qt_rolling_stock = st.selectbox(
+                    "Stock select karo", qt_valid_symbols, key="qt_rolling_select"
+                )
+
+                qt_roll_cov = qt_returns[qt_rolling_stock].rolling(60).cov(qt_returns["NIFTY"])
+                qt_roll_var = qt_returns["NIFTY"].rolling(60).var()
+                qt_rolling_beta = (qt_roll_cov / qt_roll_var).dropna()
+
+                if len(qt_rolling_beta) > 0:
+
+                    fig_qt_roll = px.line(
+                        x=qt_rolling_beta.index, y=qt_rolling_beta.values,
+                        labels={"x": "Date", "y": "Rolling Beta"},
+                        title=f"{qt_rolling_stock} — 60-Day Rolling Beta vs NIFTY"
+                    )
+                    fig_qt_roll.add_hline(y=1, line_dash="dash", annotation_text="Beta = 1 (market)")
+
+                    st.plotly_chart(fig_qt_roll, use_container_width="stretch", key="qt_rolling_beta_chart")
+
+                    qt_beta_std = qt_rolling_beta.std()
+                    if qt_beta_std > 0.3:
+                        st.warning(
+                            f"⚠️ {qt_rolling_stock} ka beta time ke saath kaafi unstable hai (std={qt_beta_std:.2f}) — "
+                            "market ke saath relationship consistent nahi hai."
+                        )
+                    else:
+                        st.info(
+                            f"🟢 {qt_rolling_stock} ka beta relatively stable hai (std={qt_beta_std:.2f}) is period me."
+                        )
+                else:
+                    st.info("Rolling beta ke liye sufficient data nahi hai (60-day window chahiye).")
+
+                # ─────────────────────────────────────────
+# PRICE TREND REGRESSION
+# ─────────────────────────────────────────
+
+                st.markdown("#### 📈 Linear Trend Regression")
+
+                qt_trend_rows = []
+
+                for qt_s in qt_valid_symbols:
+                    qt_y = qt_prices[qt_s].values
+                    qt_x = np.arange(len(qt_y))
+
+                    qt_slope2, qt_intercept2 = np.polyfit(qt_x, qt_y, 1)
+                    qt_y_pred2 = qt_slope2 * qt_x + qt_intercept2
+                    qt_ss_res2 = np.sum((qt_y - qt_y_pred2) ** 2)
+                    qt_ss_tot2 = np.sum((qt_y - qt_y.mean()) ** 2)
+                    qt_r2_2 = 1 - (qt_ss_res2 / qt_ss_tot2) if qt_ss_tot2 != 0 else 0
+
+                    qt_trend_rows.append({
+                        "Stock": qt_s,
+                        "Trend": "📈 Uptrend" if qt_slope2 > 0 else "📉 Downtrend",
+                        "Slope (₹/day)": round(qt_slope2, 3),
+                        "R² (Trend Reliability)": round(qt_r2_2, 3),
+                    })
+
+                qt_trend_df = pd.DataFrame(qt_trend_rows)
+                st.dataframe(qt_trend_df, use_container_width=True, hide_index=True)
+
+                st.caption(
+                    "R² zyada (>0.7) ho to price ek fairly consistent/smooth trend follow kar raha hai. "
+                    "R² kam ho to price choppy/sideways move kar raha hai, trend reliable nahi hai."
+                )
+
+                # ─────────────────────────────────────────
+# RETURN DISTRIBUTION & PROBABILITY STATS
+# ─────────────────────────────────────────
+
+                st.markdown("#### 🎲 Return Distribution & Probability Stats")
+
+                qt_stats_rows = []
+
+                for qt_s in qt_valid_symbols:
+                    qt_s_returns = qt_returns[qt_s]
+                    qt_stats_rows.append({
+                        "Stock": qt_s,
+                        "Mean Daily Return (%)": round(qt_s_returns.mean() * 100, 3),
+                        "Std Dev (%)": round(qt_s_returns.std() * 100, 3),
+                        "Skewness": round(qt_s_returns.skew(), 2),
+                        "Kurtosis": round(qt_s_returns.kurtosis(), 2),
+                        "P(Positive Day) %": round((qt_s_returns > 0).mean() * 100, 1),
+                    })
+
+                qt_stats_df = pd.DataFrame(qt_stats_rows)
+                st.dataframe(qt_stats_df, use_container_width=True, hide_index=True)
+
+                qt_dist_stock = st.selectbox(
+                    "Distribution dekhne ke liye stock select karo", qt_valid_symbols, key="qt_dist_select"
+                )
+
+                fig_qt_dist = px.histogram(
+                    qt_returns[qt_dist_stock] * 100,
+                    nbins=50,
+                    title=f"{qt_dist_stock} — Daily Return Distribution (%)",
+                    labels={"value": "Daily Return (%)"}
+                )
+
+                st.plotly_chart(fig_qt_dist, use_container_width="stretch", key="qt_dist_histogram")
+
+                st.caption(
+                    "Skewness < 0 = negative tail bada hai (bade crashes bade rallies se zyada common). "
+                    "Kurtosis > 0 = 'fat tails' — extreme moves normal distribution se zyada frequent hain. "
+                    "Ye purely historical frequency hai, future guarantee nahi."
+                )
+
 with tab5:
 
             st.markdown("## 🎲 Monte Carlo Simulation")
