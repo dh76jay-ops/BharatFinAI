@@ -19,6 +19,7 @@ import heapq
 import os
 from newsapi import NewsApiClient
 import yfinance as yf
+from fpdf import FPDF, XPos, YPos
 
 @st.cache_data(ttl=300)
 def get_stock_data(symbol, period):
@@ -1227,7 +1228,78 @@ Ye financial advice nahi hai. 200 words max.
         messages=[{"role": "user", "content": prompt}]
     )
     return response.choices[0].message.content
+# ─────────────────────────────────────────
+# PDF REPORT EXPORT (helpers)
+# ─────────────────────────────────────────
 
+def _pdf_safe(text):
+    """PDF ke liye text safe banata hai — Latin-1 core font (Helvetica) ke saath
+    emojis, em-dash, smart quotes, aur currency symbol crash karte hain, inhe replace karte hain."""
+    if text is None:
+        return ""
+    text = str(text)
+    replacements = {
+        "₹": "Rs.", "—": "-", "–": "-", "\u2011": "-", "\u00ad": "",
+        "\u201c": '"', "\u201d": '"', "\u2018": "'", "\u2019": "'",
+        "•": "-", "…": "...", "×": "x",
+        "🟢": "[+]", "🔴": "[-]", "🟡": "[~]", "✅": "[OK]", "⚠️": "[!]", "⚠": "[!]",
+        "❌": "[X]", "🔵": "[i]", "📊": "", "📈": "", "📉": "", "💹": "", "🏦": "",
+        "🌍": "", "📰": "", "🔬": "", "🤖": "", "📋": "", "🧬": "", "⚖️": "", "🔁": "",
+        "🔔": "", "📐": "", "🧨": "", "🧭": "", "📂": "", "🧪": "", "🎁": "", "🔄": "",
+        "🤝": "", "👔": "", "📦": "", "💵": "", "💰": "", "🛡️": "", "🛡": "",
+    }
+    for k, v in replacements.items():
+        text = text.replace(k, v)
+    return text.encode("latin-1", errors="ignore").decode("latin-1")
+
+
+def build_research_pdf(stock_symbol, period, sections, ai_report_text=None, disclaimer=""):
+    """sections: dict of {section_title: [list of fact lines]}"""
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.add_page()
+
+    pdf.set_font("Helvetica", "B", 18)
+    pdf.cell(0, 12, _pdf_safe(f"BharatFinAI Research Report - {stock_symbol}"),
+             new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+
+    pdf.set_font("Helvetica", "", 10)
+    pdf.set_text_color(100, 100, 100)
+    pdf.cell(0, 6, _pdf_safe(f"Analysis Period: {period}"),
+             new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+    pdf.ln(4)
+    pdf.set_text_color(0, 0, 0)
+
+    for section_title, lines in sections.items():
+        if not lines:
+            continue
+        pdf.set_x(pdf.l_margin)
+        pdf.set_font("Helvetica", "B", 13)
+        pdf.set_fill_color(230, 230, 250)
+        pdf.cell(0, 8, _pdf_safe(section_title), new_x=XPos.LMARGIN, new_y=YPos.NEXT, fill=True)
+        pdf.set_font("Helvetica", "", 10)
+        for line in lines:
+            pdf.set_x(pdf.l_margin)
+            pdf.multi_cell(0, 6, _pdf_safe(line))
+        pdf.ln(2)
+
+    if ai_report_text:
+        pdf.add_page()
+        pdf.set_x(pdf.l_margin)
+        pdf.set_font("Helvetica", "B", 13)
+        pdf.set_fill_color(230, 230, 250)
+        pdf.cell(0, 8, "AI Research Summary", new_x=XPos.LMARGIN, new_y=YPos.NEXT, fill=True)
+        pdf.set_font("Helvetica", "", 10)
+        pdf.set_x(pdf.l_margin)
+        pdf.multi_cell(0, 6, _pdf_safe(ai_report_text))
+
+    pdf.ln(6)
+    pdf.set_x(pdf.l_margin)
+    pdf.set_font("Helvetica", "I", 8)
+    pdf.set_text_color(150, 150, 150)
+    pdf.multi_cell(0, 5, _pdf_safe(disclaimer))
+
+    return bytes(pdf.output())
 
 # ─────────────────────────────────────────
 # TAB 1: SINGLE STOCK
@@ -1274,6 +1346,14 @@ with tab1:
         type="primary",
         use_container_width="content"
     ):
+        # Session me sticky flag rakhte hain, taaki neeche kisi bhi
+        # dropdown/number_input ko chhedne se poora analysis gayab na ho
+        # (Streamlit har widget-change pe poori script rerun karta hai,
+        # aur bina session_state ke button phir se False ho jata, jisse
+        # is poore "if" ke andar ka content hide ho jata).
+        st.session_state["single_analysis_active"] = True
+
+    if st.session_state.get("single_analysis_active"):
 
             if not symbol:
                 st.warning("⚠️ Stock symbol daalo!")
@@ -4719,6 +4799,578 @@ with tab1:
                         "text/csv"
                     )
 
+                                    # ─────────────────────────────────────────
+# AI RESEARCH ENGINE
+# ─────────────────────────────────────────
+
+                st.divider()
+                st.subheader("🔬 AI Research Engine")
+
+                st.caption(
+                    "Upar bane saare modules (Technical, Fundamental, Valuation, Risk, News, Macro) ka data combine "
+                    "karke ek structured research summary banata hai. Sirf available data use hota hai, kuch invent nahi karta."
+                )
+
+                def _safe_fact(label, fn):
+                    """fn ek lambda hai jo value return karta hai; variable missing ho (NameError) ya error aaye to fact skip ho jata hai."""
+                    try:
+                        val = fn()
+                        if val is None:
+                            return None
+                        return f"- {label}: {val}"
+                    except Exception:
+                        return None
+
+
+                research_facts = {"Company Overview": [], "Financial Health": [], "Technical Structure": [],
+                                   "Valuation": [], "Risk Factors": [], "Recent News": [], "Macro Context": []}
+
+                # Company Overview
+                research_facts["Company Overview"].append(f"- Stock: {sym}")
+                research_facts["Company Overview"].append(f"- Analysis Period: {period}")
+                f = _safe_fact("Latest Close Price", lambda: f"₹{latest['Close']:.2f}")
+                if f: research_facts["Company Overview"].append(f)
+
+                # Financial Health
+                for label, getter in [
+                    ("ROE", lambda: f"{roe*100:.2f}%" if roe is not None else None),
+                    ("ROCE", lambda: f"{roce:.2f}%" if roce is not None else None),
+                    ("Net Profit Margin", lambda: f"{net_profit_margin:.2f}%"),
+                    ("Revenue Growth (YoY)", lambda: f"{revenue_growth:.2f}%" if revenue_growth is not None else None),
+                    ("Net Profit Growth (YoY)", lambda: f"{net_profit_growth:.2f}%" if net_profit_growth is not None else None),
+                    ("Debt Growth (YoY)", lambda: f"{debt_growth:.2f}%" if debt_growth is not None else None),
+                    ("Interest Coverage Ratio", lambda: f"{interest_coverage:.2f}x" if interest_coverage is not None else None),
+                    ("CFO / Net Profit Ratio", lambda: f"{cfo_np_ratio:.2f}x" if cfo_np_ratio is not None else None),
+                ]:
+                    f = _safe_fact(label, getter)
+                    if f: research_facts["Financial Health"].append(f)
+
+                # Technical Structure
+                for label, getter in [
+                    ("RSI (14)", lambda: f"{rsi_val:.1f}"),
+                    ("MACD vs Signal", lambda: "Bullish (MACD > Signal)" if latest["MACD"] > latest["MACD_Signal"] else "Bearish (MACD < Signal)"),
+                    ("Price vs SMA-50", lambda: "Above SMA-50" if latest["Close"] > latest["SMA_50"] else "Below SMA-50"),
+                    ("52-Week Range Position", lambda: f"{week52_pos:.0f}%"),
+                ]:
+                    f = _safe_fact(label, getter)
+                    if f: research_facts["Technical Structure"].append(f)
+
+                # Valuation
+                for label, getter in [
+                    ("P/E (Trailing)", lambda: f"{pe_ratio:.2f}x" if pe_ratio is not None else None),
+                    ("P/B", lambda: f"{pb_ratio:.2f}x" if pb_ratio is not None else None),
+                    ("PEG Ratio", lambda: f"{peg_ratio:.2f}" if peg_ratio is not None else None),
+                    ("EV/EBITDA", lambda: f"{ev_ebitda:.2f}x" if ev_ebitda is not None else None),
+                ]:
+                    f = _safe_fact(label, getter)
+                    if f: research_facts["Valuation"].append(f)
+
+                # Risk Factors
+                for label, getter in [
+                    ("Volatility (Annualized)", lambda: f"{annualized_volatility:.2f}%"),
+                    ("Sharpe Ratio", lambda: f"{sharpe_ratio:.2f}" if sharpe_ratio is not None else None),
+                    ("Sortino Ratio", lambda: f"{sortino_ratio:.2f}" if sortino_ratio is not None else None),
+                    ("Beta (vs NIFTY)", lambda: f"{stock_beta:.2f}" if stock_beta is not None else None),
+                    ("Max Drawdown", lambda: f"{stock_max_drawdown:.2f}%"),
+                ]:
+                    f = _safe_fact(label, getter)
+                    if f: research_facts["Risk Factors"].append(f)
+
+                # Recent News
+                f = _safe_fact("Company News Sentiment", lambda: nws_overall)
+                if f: research_facts["Recent News"].append(f)
+                f = _safe_fact("Avg News Score", lambda: f"{nws_avg:+.2f}")
+                if f: research_facts["Recent News"].append(f)
+
+                # Macro Context
+                for label, getter in [
+                    ("NIFTY 50", lambda: f"{macro_data['NIFTY 50'][0]:,.2f}" if macro_data.get("NIFTY 50", (None,))[0] else None),
+                    ("India VIX", lambda: f"{vix_value:.2f}" if vix_value is not None else None),
+                    ("Repo Rate (manual)", lambda: f"{manual_repo_rate:.2f}%"),
+                    ("CPI Inflation (manual)", lambda: f"{manual_cpi:.2f}%"),
+                ]:
+                    f = _safe_fact(label, getter)
+                    if f: research_facts["Macro Context"].append(f)
+
+                # Multi-Factor composite (agar available ho)
+                try:
+                    if composite_score is not None:
+                        research_facts["Financial Health"].append(f"- Multi-Factor Composite Score: {composite_score:.1f}/100")
+                except NameError:
+                    pass
+
+                total_facts = sum(len(v) for v in research_facts.values())
+
+                if total_facts < 5:
+                    st.info(
+                        "Research report banane ke liye kaafi data abhi collect nahi hua — upar wale sections pehle load hone do."
+                    )
+                else:
+
+                    facts_block = ""
+                    for section, lines in research_facts.items():
+                        if lines:
+                            facts_block += f"\n{section}:\n" + "\n".join(lines) + "\n"
+
+                    @st.cache_data(ttl=1800, show_spinner=False)
+                    def generate_research_report(stock_sym, facts_text, lvl):
+                        api_key = os.getenv("GROQ_API_KEY")
+                        if not api_key:
+                            raise RuntimeError("GROQ_API_KEY nahi mili")
+
+                        client = Groq(api_key=api_key)
+
+                        prompt = f"""
+Tu ek Indian equity research analyst hai. {lvl} level ke user ko Hinglish me samjhao.
+
+Stock: {stock_sym}
+
+Neeche diye gaye facts ke alawa KUCH bhi invent mat karna — koi naya number, target price, ya recommendation mat do
+jo in facts se directly na nikalta ho. Agar kisi section ka data available nahi hai to seedha likh do
+"available nahi hai" — chup mat raho, aur na hi guess karo.
+
+{facts_text}
+
+Is structure me likho:
+1. **Company Overview** (2-3 lines)
+2. **Financial Health** (fundamentals ka summary)
+3. **Technical Structure** (price/momentum ka summary)
+4. **Valuation** (mehenga/sasta — kis basis pe)
+5. **Risk Factors** (sabse bada risk kya hai)
+6. **Recent News** (agar data hai)
+7. **What to Monitor** (aage kya dekhna chahiye — 2-3 bullets)
+
+Max 350 words. End me likho: "Ye sirf research summary hai, investment advice nahi."
+"""
+
+                        response = client.chat.completions.create(
+                            model="openai/gpt-oss-120b",
+                            max_tokens=1200,
+                            messages=[{"role": "user", "content": prompt}]
+                        )
+                        return response.choices[0].message.content
+
+
+                    research_cache_key = f"research_report_{sym}_{period}"
+
+                    if st.button("📋 Generate Full Research Report", key="gen_research_btn"):
+                        with st.spinner("Research report ban raha hai — sab modules ka data combine ho raha hai..."):
+                            try:
+                                report_text = generate_research_report(sym, facts_block, user_type)
+                                st.session_state[research_cache_key] = report_text
+                            except Exception as e:
+                                st.error(f"❌ Report generate nahi ho paya: {e}")
+
+                    if research_cache_key in st.session_state:
+
+                        st.markdown("---")
+                        st.markdown(st.session_state[research_cache_key])
+
+                        st.download_button(
+                            "📥 Report Download Karo (.txt)",
+                            st.session_state[research_cache_key].encode("utf-8"),
+                            f"{sym}_research_report.txt",
+                            "text/plain",
+                            key="download_research_report"
+                        )
+
+                    with st.expander("📂 Is report me kya data use hua (raw facts)"):
+                        st.text(facts_block)
+
+                        # FULL PDF REPORT DOWNLOAD
+# ─────────────────────────────────────────
+
+                st.markdown("### 📄 Full PDF Report")
+
+                st.caption(
+                        "Upar ke saare facts + AI summary (agar generate kiya ho) ek PDF me. "
+                        "Portfolio/Backtest details is PDF me include nahi hain — wo alag tabs me hain."
+                    )
+
+                pdf_ai_text = st.session_state.get(research_cache_key)
+
+                pdf_disclaimer = (
+                        "Yeh report sirf educational/research purpose ke liye hai. Yeh financial advice nahi hai. "
+                        "Investment decisions lene se pehle SEBI-registered financial advisor se consult karein. "
+                        "BharatFinAI kisi bhi financial loss ke liye responsible nahi hai."
+                    )
+
+                try:
+                        pdf_bytes = build_research_pdf(sym, period, research_facts, pdf_ai_text, pdf_disclaimer)
+
+                        st.download_button(
+                            "📥 Full Report PDF Download Karo",
+                            pdf_bytes,
+                            f"{sym}_bharatfinai_report.pdf",
+                            "application/pdf",
+                            key="full_pdf_report_download"
+                        )
+
+                        if not pdf_ai_text:
+                            st.caption(
+                                "ℹ️ AI Research Summary abhi generate nahi hui — upar 'Generate Full Research Report' "
+                                "button dabao, phir dubara PDF download karo taaki AI summary bhi include ho."
+                            )
+                except Exception as e:
+                        st.warning(f"⚠️ PDF generate nahi ho paya: {e}")
+
+                                        # ─────────────────────────────────────────
+# BACKTESTING ENGINE
+# ─────────────────────────────────────────
+
+                st.divider()
+                st.subheader("🔁 Backtesting Engine")
+
+                st.caption(
+                    "User-defined rule-based strategies ka historical simulation. Transaction cost included hai, "
+                    "par slippage/liquidity constraints nahi — real trading se result alag ho sakta hai."
+                )
+
+                bt_c1, bt_c2, bt_c3 = st.columns(3)
+
+                with bt_c1:
+                    bt_strategy = st.selectbox(
+                        "Strategy",
+                        ["SMA Crossover (20/50)", "RSI Mean-Reversion (30/70)", "MACD Crossover"],
+                        key="bt_strategy_select"
+                    )
+
+                with bt_c2:
+                    bt_txn_cost_pct = st.number_input(
+                        "Transaction Cost (% per trade)", min_value=0.0, max_value=2.0,
+                        value=0.1, step=0.05, key="bt_txn_cost"
+                    )
+
+                with bt_c3:
+                    bt_capital = st.number_input(
+                        "Starting Capital (₹)", min_value=1000, value=100000, step=10000, key="bt_capital"
+                    )
+
+                bt_df = df.copy()
+
+                if bt_strategy == "SMA Crossover (20/50)":
+                    bt_df["sma_fast"] = bt_df["Close"].rolling(20).mean()
+                    bt_df["sma_slow"] = bt_df["Close"].rolling(50).mean()
+                    bt_df["signal"] = 0
+                    bt_df.loc[bt_df["sma_fast"] > bt_df["sma_slow"], "signal"] = 1
+
+                elif bt_strategy == "RSI Mean-Reversion (30/70)":
+                    bt_df["signal"] = 0
+                    bt_position = 0
+                    bt_signals = []
+                    for rsi_v in bt_df["RSI"]:
+                        if pd.notna(rsi_v):
+                            if bt_position == 0 and rsi_v < 30:
+                                bt_position = 1
+                            elif bt_position == 1 and rsi_v > 70:
+                                bt_position = 0
+                        bt_signals.append(bt_position)
+                    bt_df["signal"] = bt_signals
+
+                else:  # MACD Crossover
+                    bt_df["signal"] = 0
+                    bt_df.loc[bt_df["MACD"] > bt_df["MACD_Signal"], "signal"] = 1
+
+                bt_df["signal"] = bt_df["signal"].fillna(0)
+                bt_df["position_change"] = bt_df["signal"].diff().fillna(0)
+
+                bt_trades = []
+                bt_entry_price = None
+                bt_entry_date = None
+
+                for idx, row in bt_df.iterrows():
+                    if row["position_change"] == 1:  # entry
+                        bt_entry_price = row["Close"]
+                        bt_entry_date = idx
+                    elif row["position_change"] == -1 and bt_entry_price is not None:  # exit
+                        exit_price = row["Close"]
+                        gross_return = (exit_price - bt_entry_price) / bt_entry_price
+                        net_return = gross_return - (2 * bt_txn_cost_pct / 100)  # entry + exit cost
+                        bt_trades.append({
+                            "Entry Date": bt_entry_date.strftime("%Y-%m-%d") if hasattr(bt_entry_date, "strftime") else str(bt_entry_date),
+                            "Exit Date": idx.strftime("%Y-%m-%d") if hasattr(idx, "strftime") else str(idx),
+                            "Entry Price": round(bt_entry_price, 2),
+                            "Exit Price": round(exit_price, 2),
+                            "Return (%)": round(net_return * 100, 2),
+                            "Result": "Win" if net_return > 0 else "Loss",
+                        })
+                        bt_entry_price = None
+
+                # Open position ko bhi account karo (agar abhi tak close nahi hua)
+                if bt_entry_price is not None:
+                    last_price = bt_df["Close"].iloc[-1]
+                    gross_return = (last_price - bt_entry_price) / bt_entry_price
+                    net_return = gross_return - (bt_txn_cost_pct / 100)  # sirf entry cost, abhi exit nahi hua
+                    bt_trades.append({
+                        "Entry Date": bt_entry_date.strftime("%Y-%m-%d") if hasattr(bt_entry_date, "strftime") else str(bt_entry_date),
+                        "Exit Date": "Open (abhi bhi position me hai)",
+                        "Entry Price": round(bt_entry_price, 2),
+                        "Exit Price": round(last_price, 2),
+                        "Return (%)": round(net_return * 100, 2),
+                        "Result": "Open",
+                    })
+
+                if len(bt_trades) == 0:
+
+                    st.info(
+                        "Is strategy ne is period me koi trade generate nahi kiya. Longer period ya alag strategy try karo."
+                    )
+
+                else:
+
+                    # ─────────────────────────────────────────
+# EQUITY CURVE
+# ─────────────────────────────────────────
+
+                    bt_df["strategy_return"] = bt_df["Close"].pct_change() * bt_df["signal"].shift(1).fillna(0)
+
+                    bt_cost_drag = bt_df["position_change"].abs() * (bt_txn_cost_pct / 100)
+                    bt_df["strategy_return_net"] = bt_df["strategy_return"] - bt_cost_drag
+
+                    bt_df["equity"] = bt_capital * (1 + bt_df["strategy_return_net"].fillna(0)).cumprod()
+                    bt_df["buy_hold_equity"] = bt_capital * (bt_df["Close"] / bt_df["Close"].iloc[0])
+
+                    fig_bt = go.Figure()
+
+                    fig_bt.add_trace(go.Scatter(
+                        x=bt_df.index, y=bt_df["equity"],
+                        mode="lines", name=f"{bt_strategy} Strategy"
+                    ))
+
+                    fig_bt.add_trace(go.Scatter(
+                        x=bt_df.index, y=bt_df["buy_hold_equity"],
+                        mode="lines", name="Buy & Hold"
+                    ))
+
+                    fig_bt.update_layout(
+                        title=f"Equity Curve — {bt_strategy} vs Buy & Hold",
+                        xaxis_title="Date",
+                        yaxis_title="Portfolio Value (₹)"
+                    )
+
+                    st.plotly_chart(
+                        fig_bt,
+                        use_container_width="stretch",
+                        key="backtest_equity_chart"
+                    )
+
+                    # ─────────────────────────────────────────
+# METRICS
+# ─────────────────────────────────────────
+
+                    bt_final_equity = bt_df["equity"].iloc[-1]
+                    bt_total_return = ((bt_final_equity - bt_capital) / bt_capital) * 100
+
+                    bt_buy_hold_final = bt_df["buy_hold_equity"].iloc[-1]
+                    bt_buy_hold_return = ((bt_buy_hold_final - bt_capital) / bt_capital) * 100
+
+                    bt_days = (bt_df.index[-1] - bt_df.index[0]).days
+                    bt_years = max(bt_days / 365.25, 0.01)
+
+                    bt_cagr = (
+                        ((bt_final_equity / bt_capital) ** (1 / bt_years) - 1) * 100
+                        if bt_final_equity > 0 else None
+                    )
+
+                    bt_closed_trades = [t for t in bt_trades if t["Result"] != "Open"]
+                    bt_wins = sum(1 for t in bt_closed_trades if t["Result"] == "Win")
+                    bt_win_rate = (bt_wins / len(bt_closed_trades) * 100) if bt_closed_trades else None
+
+                    bt_equity_returns = bt_df["strategy_return_net"].dropna()
+                    bt_sharpe = (
+                        (bt_equity_returns.mean() / bt_equity_returns.std()) * np.sqrt(252)
+                        if bt_equity_returns.std() != 0 else None
+                    )
+
+                    bt_running_max = bt_df["equity"].cummax()
+                    bt_drawdown = ((bt_df["equity"] - bt_running_max) / bt_running_max) * 100
+                    bt_max_dd = bt_drawdown.min()
+
+                    bm1, bm2, bm3, bm4 = st.columns(4)
+
+                    with bm1:
+                        st.metric("Strategy Return", f"{bt_total_return:+.2f}%", f"vs Buy&Hold {bt_buy_hold_return:+.2f}%")
+
+                    with bm2:
+                        st.metric("CAGR", f"{bt_cagr:.2f}%" if bt_cagr is not None else "N/A")
+
+                    with bm3:
+                        st.metric("Win Rate", f"{bt_win_rate:.1f}%" if bt_win_rate is not None else "N/A")
+
+                    with bm4:
+                        st.metric("Max Drawdown", f"{bt_max_dd:.2f}%")
+
+                    bm5, bm6, bm7 = st.columns(3)
+
+                    with bm5:
+                        st.metric("Sharpe Ratio", f"{bt_sharpe:.2f}" if bt_sharpe is not None else "N/A")
+
+                    with bm6:
+                        st.metric("Number of Trades", len(bt_trades))
+
+                    with bm7:
+                        st.metric("P&L (₹)", f"₹{bt_final_equity - bt_capital:+,.0f}")
+
+                    # ─────────────────────────────────────────
+# TRADE LOG
+# ─────────────────────────────────────────
+
+                    st.markdown("### 📋 Trade Log")
+
+                    st.dataframe(
+                        pd.DataFrame(bt_trades),
+                        use_container_width=True,
+                        hide_index=True
+                    )
+
+                    csv_bt = pd.DataFrame(bt_trades).to_csv(index=False).encode("utf-8")
+                    st.download_button(
+                        "📥 Trade Log CSV Download",
+                        csv_bt,
+                        f"{sym}_backtest_trades.csv",
+                        "text/csv",
+                        key="backtest_csv_download"
+                    )
+
+                    if bt_total_return > bt_buy_hold_return:
+                        st.success(
+                            f"✅ {bt_strategy} ne is period me Buy & Hold ({bt_buy_hold_return:+.2f}%) ko outperform kiya."
+                        )
+                    else:
+                        st.warning(
+                            f"⚠️ Buy & Hold ({bt_buy_hold_return:+.2f}%) ne {bt_strategy} se better perform kiya is period me."
+                        )
+
+                    st.info(
+                        "📌 Reality check: sirf ek stock, ek fixed period, single strategy parameters (20/50, 30/70 jaise "
+                        "fixed thresholds — optimize nahi kiye). Ye ek simulation hai, kisi trading decision ka basis nahi."
+                    )
+
+                                    # ─────────────────────────────────────────
+# FINANCIAL INTELLIGENCE DASHBOARD
+# ─────────────────────────────────────────
+
+                st.divider()
+                st.subheader("🧭 Financial Intelligence Dashboard")
+
+                st.caption(
+                    "Upar bane saare modules ka ek-line verdict, ek jagah. Detail ke liye respective section "
+                    "upar dekho — ye sirf quick-scan summary hai."
+                )
+
+                def _fid_badge(label, value_str, verdict):
+                    """verdict: 'good' | 'warn' | 'bad' | 'neutral'"""
+                    colors = {"good": "🟢", "warn": "🟡", "bad": "🔴", "neutral": "⚪"}
+                    return {"Category": label, "Reading": value_str, "Signal": colors.get(verdict, "⚪")}
+
+
+                fid_rows = []
+
+                # Technical
+                try:
+                    fid_tech_verdict = "good" if rsi_val > 50 and latest["MACD"] > latest["MACD_Signal"] else (
+                        "bad" if rsi_val < 40 and latest["MACD"] < latest["MACD_Signal"] else "neutral"
+                    )
+                    fid_rows.append(_fid_badge(
+                        "📊 Technical", f"RSI {rsi_val:.0f}, {'Bullish' if latest['MACD'] > latest['MACD_Signal'] else 'Bearish'} MACD",
+                        fid_tech_verdict
+                    ))
+                except NameError:
+                    pass
+
+                # Fundamental
+                try:
+                    if roe is not None:
+                        fid_fund_verdict = "good" if roe * 100 > 15 else ("bad" if roe * 100 < 8 else "neutral")
+                        fid_rows.append(_fid_badge("📘 Fundamental", f"ROE {roe*100:.1f}%", fid_fund_verdict))
+                except NameError:
+                    pass
+
+                # Valuation
+                try:
+                    if pe_ratio is not None:
+                        try:
+                            fid_val_verdict = "good" if pe_ratio < sector_avg_pe_full * 0.9 else (
+                                "bad" if pe_ratio > sector_avg_pe_full * 1.1 else "neutral"
+                            )
+                            fid_val_text = f"P/E {pe_ratio:.1f}x (sector avg {sector_avg_pe_full:.1f}x)"
+                        except NameError:
+                            fid_val_verdict = "good" if pe_ratio < 15 else ("bad" if pe_ratio > 40 else "neutral")
+                            fid_val_text = f"P/E {pe_ratio:.1f}x"
+                        fid_rows.append(_fid_badge("💹 Valuation", fid_val_text, fid_val_verdict))
+                except NameError:
+                    pass
+
+                # Risk
+                try:
+                    fid_risk_verdict = "bad" if annualized_volatility > 40 else ("good" if annualized_volatility < 25 else "neutral")
+                    fid_rows.append(_fid_badge("⚠️ Risk", f"Volatility {annualized_volatility:.1f}% (annualized)", fid_risk_verdict))
+                except NameError:
+                    pass
+
+                # News
+                try:
+                    fid_news_verdict = "good" if nws_avg > 0.10 else ("bad" if nws_avg < -0.10 else "neutral")
+                    fid_rows.append(_fid_badge("📰 News Sentiment", nws_overall, fid_news_verdict))
+                except NameError:
+                    pass
+
+                # Macro
+                try:
+                    if vix_value is not None:
+                        fid_macro_verdict = "good" if vix_value < 14 else ("bad" if vix_value > 20 else "neutral")
+                        fid_rows.append(_fid_badge("🌍 Macro (VIX)", f"India VIX {vix_value:.1f}", fid_macro_verdict))
+                except NameError:
+                    pass
+
+                # Smart Money
+                try:
+                    fid_sm_verdict = "good" if smart_money_score >= 65 else ("bad" if smart_money_score < 40 else "neutral")
+                    fid_rows.append(_fid_badge("🏦 Smart Money", f"{smart_signal} ({smart_money_score}/100)", fid_sm_verdict))
+                except NameError:
+                    pass
+
+                # Multi-Factor (overall)
+                try:
+                    if composite_score is not None:
+                        fid_mf_verdict = "good" if composite_score >= 65 else ("bad" if composite_score < 50 else "neutral")
+                        fid_rows.append(_fid_badge("🧬 Multi-Factor", f"{composite_score:.0f}/100 ({grade})", fid_mf_verdict))
+                except NameError:
+                    pass
+
+                if fid_rows:
+
+                    fid_df = pd.DataFrame(fid_rows)[["Signal", "Category", "Reading"]]
+
+                    st.dataframe(
+                        fid_df,
+                        use_container_width=True,
+                        hide_index=True
+                    )
+
+                    fid_good = sum(1 for r in fid_rows if r["Signal"] == "🟢")
+                    fid_bad = sum(1 for r in fid_rows if r["Signal"] == "🔴")
+                    fid_total = len(fid_rows)
+
+                    fd1, fd2, fd3 = st.columns(3)
+                    with fd1:
+                        st.metric("Positive Signals", f"{fid_good}/{fid_total}")
+                    with fd2:
+                        st.metric("Negative Signals", f"{fid_bad}/{fid_total}")
+                    with fd3:
+                        fid_overall = "🟢 Favorable" if fid_good > fid_bad else ("🔴 Caution" if fid_bad > fid_good else "🟡 Mixed")
+                        st.metric("Overall Lean", fid_overall)
+
+                    st.caption(
+                        "⚠️ Ye ek mechanical count hai (kitne categories positive vs negative), weighted decision nahi. "
+                        "Poora context upar ke modules me hai — koi bhi ek signal akele decision ka basis nahi banana chahiye."
+                    )
+
+                else:
+                    st.info(
+                        "Dashboard banane ke liye upar wale modules abhi load nahi hue — pehle 'Analyze Stock' chalao."
+                    )
+
 # ─────────────────────────────────────────
 # TAB 2: MULTI SCANNER
 # ─────────────────────────────────────────
@@ -6487,3 +7139,225 @@ with tab7:
             ],
             use_container_width="stretch"
         )
+
+                # ─────────────────────────────────────────
+# PORTFOLIO BETA
+# ─────────────────────────────────────────
+
+        st.subheader("📐 Portfolio Beta (vs NIFTY)")
+
+        pi2_betas = {}
+
+        for pi2_stock in result_df["Stock"]:
+            try:
+                pi2_info = yf.Ticker(f"{pi2_stock}.NS").info
+                pi2_b = pi2_info.get("beta")
+                if pi2_b is not None:
+                    pi2_betas[pi2_stock] = pi2_b
+            except Exception:
+                continue
+
+        if pi2_betas:
+
+            pi2_weighted_beta = 0
+            pi2_weight_sum_used = 0
+
+            for _, pi2_row in result_df.iterrows():
+                if pi2_row["Stock"] in pi2_betas:
+                    pi2_weighted_beta += pi2_betas[pi2_row["Stock"]] * (pi2_row["Allocation %"] / 100)
+                    pi2_weight_sum_used += pi2_row["Allocation %"] / 100
+
+            if pi2_weight_sum_used > 0:
+
+                pi2_portfolio_beta = pi2_weighted_beta / pi2_weight_sum_used
+
+                st.metric("Portfolio Beta", f"{pi2_portfolio_beta:.2f}")
+
+                if pi2_portfolio_beta > 1.2:
+                    st.warning("⚠️ Portfolio market se zyada volatile hai (high beta) — bear market me zyada girega.")
+                elif pi2_portfolio_beta < 0.8:
+                    st.success("✅ Portfolio defensive hai (low beta) — market crash me relatively protected.")
+                else:
+                    st.info("🟡 Portfolio roughly market ke saath move karta hai.")
+
+                if pi2_weight_sum_used < 0.9:
+                    st.caption(
+                        f"⚠️ Sirf {pi2_weight_sum_used*100:.0f}% allocation ke stocks ka beta data mila — "
+                        "baaki stocks ke liye yfinance beta provide nahi karta."
+                    )
+            else:
+                st.info("Portfolio beta calculate nahi ho saka — beta data available nahi hai.")
+        else:
+            st.info("Kisi bhi stock ka beta data yfinance se nahi mila.")
+
+        # ─────────────────────────────────────────
+# REBALANCING ANALYSIS
+# ─────────────────────────────────────────
+
+        st.subheader("⚖️ Rebalancing Analysis")
+
+        st.caption(
+            "Assumption: abhi naive equal-weight portfolio hold kar rahe ho. Ye table batata hai optimal "
+            "(max-Sharpe) allocation tak pahunchne ke liye kya badlav chahiye. Agar actual holdings equal-weight "
+            "se alag hain, is table ko directly follow mat karo — ye sirf ek reference point hai."
+        )
+
+        pi2_equal_weight_pct = 100 / len(result_df)
+
+        pi2_rebalance_df = result_df[["Stock", "Allocation %"]].copy()
+        pi2_rebalance_df.columns = ["Stock", "Optimal %"]
+        pi2_rebalance_df["Current % (equal-weight assumption)"] = round(pi2_equal_weight_pct, 2)
+        pi2_rebalance_df["Change Needed (pp)"] = (
+            pi2_rebalance_df["Optimal %"] - pi2_rebalance_df["Current % (equal-weight assumption)"]
+        ).round(2)
+        pi2_rebalance_df["Action"] = pi2_rebalance_df["Change Needed (pp)"].apply(
+            lambda x: "🟢 Increase" if x > 1 else ("🔴 Reduce" if x < -1 else "🟡 Hold")
+        )
+        pi2_rebalance_df["Amount to Shift (₹)"] = (
+            (pi2_rebalance_df["Change Needed (pp)"] / 100) * investment
+        ).round(0)
+
+        st.dataframe(
+            pi2_rebalance_df,
+            use_container_width=True,
+            hide_index=True
+        )
+
+        # ─────────────────────────────────────────
+# SCENARIO & STRESS TESTING (roadmap-specific scenarios)
+# ─────────────────────────────────────────
+
+        st.subheader("🧨 Scenario & Stress Testing")
+
+        st.caption(
+            "Sector-sensitivity assumptions ke basis pe approximate impact hai — historical regression se "
+            "calibrate nahi hui, directional estimate hai, exact prediction nahi."
+        )
+
+        pi2_sensitivity = {
+            "Energy":  {"Crude +20%": -0.12, "Interest Rate +1%": -0.03, "USD/INR +5%": 0.02, "Market -10%": -0.10},
+            "Banking": {"Crude +20%": -0.02, "Interest Rate +1%": -0.08, "USD/INR +5%": -0.01, "Market -10%": -0.12},
+            "IT":      {"Crude +20%": -0.01, "Interest Rate +1%": -0.03, "USD/INR +5%": 0.06, "Market -10%": -0.08},
+            "Auto":    {"Crude +20%": -0.08, "Interest Rate +1%": -0.06, "USD/INR +5%": -0.02, "Market -10%": -0.11},
+            "Pharma":  {"Crude +20%": -0.01, "Interest Rate +1%": -0.02, "USD/INR +5%": 0.04, "Market -10%": -0.06},
+            "FMCG":    {"Crude +20%": -0.03, "Interest Rate +1%": -0.02, "USD/INR +5%": -0.01, "Market -10%": -0.07},
+            "Unknown": {"Crude +20%": -0.05, "Interest Rate +1%": -0.05, "USD/INR +5%": -0.01, "Market -10%": -0.10},
+        }
+
+        pi2_scenarios = ["Crude +20%", "Interest Rate +1%", "USD/INR +5%", "Market -10%"]
+
+        pi2_scenario_results = []
+
+        for pi2_scn in pi2_scenarios:
+
+            pi2_scn_impact = 0
+
+            for _, pi2_srow in sector_df.iterrows():
+                pi2_sector = pi2_srow["Sector"]
+                pi2_alloc_frac = pi2_srow["Allocation %"] / 100
+                pi2_sens = pi2_sensitivity.get(pi2_sector, pi2_sensitivity["Unknown"]).get(pi2_scn, 0)
+                pi2_scn_impact += pi2_alloc_frac * pi2_sens
+
+            pi2_scenario_results.append({
+                "Scenario": pi2_scn,
+                "Est. Portfolio Impact": f"{pi2_scn_impact*100:+.2f}%",
+                "Est. ₹ Impact": f"₹{pi2_scn_impact * investment:+,.0f}"
+            })
+
+        st.dataframe(
+            pd.DataFrame(pi2_scenario_results),
+            use_container_width=True,
+            hide_index=True
+        )
+
+        with st.expander("📋 Assumptions used (sector sensitivity, approximate)"):
+            st.dataframe(
+                pd.DataFrame(pi2_sensitivity).T,
+                use_container_width=True
+            )
+            st.caption(
+                "Energy=Crude ke saath sabse sensitive, Banking=Interest Rate ke saath, IT=USD/INR ke saath "
+                "(INR depreciation IT exporters ke liye positive hota hai, isliye wahan sign positive hai)."
+            )
+
+        pi2_worst_pct = min(
+            pi2_scenario_results,
+            key=lambda r: float(r["Est. Portfolio Impact"].strip("%"))
+        )
+
+        st.warning(
+            f"🔴 Sabse bada risk: **{pi2_worst_pct['Scenario']}** scenario me portfolio ka estimated impact "
+            f"{pi2_worst_pct['Est. Portfolio Impact']} hai."
+        )
+
+        # ─────────────────────────────────────────
+# INSTITUTIONAL / SMART MONEY LAYER
+# ─────────────────────────────────────────
+
+        st.subheader("🏦 Institutional / Smart Money Layer")
+
+        st.caption(
+            "yfinance se sirf institutional/insider holding % milte hain (jab available ho, Indian stocks ke liye "
+            "aksar sparse hota hai). FII/DII daily flows, Bulk/Block Deals, Delivery %, Open Interest aur Futures "
+            "positioning NSE ke internal/paid data se aate hain — free API me ye nahi milte, isliye yahan shamil nahi kiye."
+        )
+
+        pi2_inst_rows = []
+
+        for pi2_stock in result_df["Stock"]:
+            try:
+                pi2_tkr = yf.Ticker(f"{pi2_stock}.NS")
+                pi2_major = pi2_tkr.major_holders
+
+                pi2_inst_pct = None
+                pi2_insider_pct = None
+
+                if pi2_major is not None and not pi2_major.empty:
+                    for _, pi2_mrow in pi2_major.iterrows():
+                        pi2_label = str(pi2_mrow.iloc[-1]).lower() if len(pi2_mrow) >= 2 else ""
+                        pi2_val = pi2_mrow.iloc[0]
+                        if "institutions" in pi2_label and "insider" not in pi2_label:
+                            pi2_inst_pct = pi2_val
+                        elif "insider" in pi2_label:
+                            pi2_insider_pct = pi2_val
+
+                pi2_inst_rows.append({
+                    "Stock": pi2_stock,
+                    "Institutional Holding": pi2_inst_pct if pi2_inst_pct is not None else "N/A",
+                    "Insider Holding": pi2_insider_pct if pi2_insider_pct is not None else "N/A",
+                })
+
+            except Exception:
+                pi2_inst_rows.append({"Stock": pi2_stock, "Institutional Holding": "N/A", "Insider Holding": "N/A"})
+
+        if any(r["Institutional Holding"] != "N/A" for r in pi2_inst_rows):
+            st.dataframe(pd.DataFrame(pi2_inst_rows), use_container_width=True, hide_index=True)
+        else:
+            st.info("Institutional holding data in stocks ke liye yfinance se available nahi hai.")
+
+        with st.expander("📝 Manual: Promoter Holding Change (quarterly, NSE/BSE shareholding pattern se)"):
+
+            st.caption(
+                "Session-only hain — latest quarterly shareholding pattern NSE/BSE filing se check karke daalo."
+            )
+
+            pi2_promoter_rows = []
+
+            for pi2_stock in result_df["Stock"]:
+                pi2_pchange = st.number_input(
+                    f"{pi2_stock} — Promoter Holding Change (QoQ, %)",
+                    min_value=-20.0, max_value=20.0, value=0.0, step=0.1,
+                    key=f"pi2_promoter_{pi2_stock}"
+                )
+                pi2_promoter_rows.append({"Stock": pi2_stock, "Promoter Change (QoQ %)": pi2_pchange})
+
+            pi2_promoter_df = pd.DataFrame(pi2_promoter_rows)
+            st.dataframe(pi2_promoter_df, use_container_width=True, hide_index=True)
+
+            pi2_declining = pi2_promoter_df[pi2_promoter_df["Promoter Change (QoQ %)"] < -1]
+
+            if not pi2_declining.empty:
+                st.warning(
+                    "⚠️ In stocks me promoter holding decline hui hai (manual input ke hisab se): "
+                    + ", ".join(pi2_declining["Stock"].tolist())
+                )
