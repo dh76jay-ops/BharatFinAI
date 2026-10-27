@@ -10,3 +10,6 @@ groq
 newsapi-python
 python-dotenv
 fpdf2
+sklearn
+scipy
+arch

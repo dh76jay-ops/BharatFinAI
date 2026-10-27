@@ -6,3 +6,17 @@ feedback.csv
 data/portfolio.csv
 data/watchlist.csv
 data/feedback.csv
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+.env
+.streamlit/secrets.toml
+scanner_audit_files.zip
+scanner_audit_files/
+*.patch
+app_main_backup*.py
+app_main_*.py
+app_mainvjzcjgdcgdwcdjhc.py
+app_main adv
+app_main quant adv

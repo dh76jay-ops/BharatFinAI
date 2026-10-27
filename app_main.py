@@ -4,10 +4,9 @@ from core.trust_engine import get_trust_scores
 from core.signals import get_signal
 from ai.prompts import BOOK_KNOWLEDGE
 from ui.styles import CUSTOM_CSS
+from ui.risk_tab import render_risk_tab
 from data.feedback import save_feedback, load_feedback
 import streamlit as st
-import seaborn as sns
-import matplotlib.pyplot as plt
 from textblob import TextBlob
 import pandas as pd
 import numpy as np
@@ -19,11 +18,27 @@ import heapq
 import os
 from newsapi import NewsApiClient
 import yfinance as yf
-from fpdf import FPDF, XPos, YPos
+import calendar
+from core.ai_comparison_engine import (
+    FACTOR_WEIGHTS,
+    analyze_stock,
+    calculate_position_size,
+    normalize_symbol,
+    weighted_research_score,
+)
+from core.ai_comparison_timeline import (
+    normalize_comparison_symbol,
+    clean_history,
+    calculate_price_metrics,
+    divergence_evidence,
+    build_timeline_figure,
+    ai_evidence_payload,
+)
 
 @st.cache_data(ttl=300)
-def get_stock_data(symbol, period):
-    return yf.Ticker(symbol).history(period=period)
+def get_stock_data(symbol, period, auto_adjust=True):
+    """Cached Yahoo Finance history; auto_adjust selects adjusted/raw Close."""
+    return yf.Ticker(symbol).history(period=period, auto_adjust=auto_adjust)
 
 def section_title(text):
     st.markdown(f"""
@@ -1253,45 +1268,102 @@ def _pdf_safe(text):
     return text.encode("latin-1", errors="ignore").decode("latin-1")
 
 
-def build_research_pdf(stock_symbol, period, sections, ai_report_text=None, disclaimer=""):
-    """sections: dict of {section_title: [list of fact lines]}"""
+import io
+
+def _fig_to_png(fig):
+    f = go.Figure(fig)
+    f.update_layout(template="plotly_white", paper_bgcolor="white",
+                    plot_bgcolor="white", font=dict(color="black"))
+    return f.to_image(format="png", width=1100, height=550, scale=2)
+
+
+def build_full_pdf(stock_symbol, period, sections, figures, tables, ai_texts, disclaimer=""):
+    from fpdf import FPDF
+    from fpdf.enums import XPos, YPos
+
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
+    nl = dict(new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+    skipped = []
 
-    pdf.set_font("Helvetica", "B", 18)
-    pdf.cell(0, 12, _pdf_safe(f"BharatFinAI Research Report - {stock_symbol}"),
-             new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-
-    pdf.set_font("Helvetica", "", 10)
-    pdf.set_text_color(100, 100, 100)
-    pdf.cell(0, 6, _pdf_safe(f"Analysis Period: {period}"),
-             new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-    pdf.ln(4)
-    pdf.set_text_color(0, 0, 0)
-
-    for section_title, lines in sections.items():
-        if not lines:
-            continue
+    def heading(text):
         pdf.set_x(pdf.l_margin)
         pdf.set_font("Helvetica", "B", 13)
         pdf.set_fill_color(230, 230, 250)
-        pdf.cell(0, 8, _pdf_safe(section_title), new_x=XPos.LMARGIN, new_y=YPos.NEXT, fill=True)
+        pdf.cell(0, 8, _pdf_safe(text), fill=True, **nl)
         pdf.set_font("Helvetica", "", 10)
+
+    pdf.set_font("Helvetica", "B", 18)
+    pdf.cell(0, 12, _pdf_safe(f"BharatFinAI Complete Report - {stock_symbol}"), **nl)
+    pdf.set_font("Helvetica", "", 10)
+    pdf.set_text_color(100, 100, 100)
+    pdf.cell(0, 6, _pdf_safe(f"Analysis Period: {period}"), **nl)
+    pdf.ln(4)
+    pdf.set_text_color(0, 0, 0)
+
+    for title, lines in sections.items():
+        if not lines:
+            continue
+        heading(title)
         for line in lines:
             pdf.set_x(pdf.l_margin)
             pdf.multi_cell(0, 6, _pdf_safe(line))
         pdf.ln(2)
 
-    if ai_report_text:
+    for title, df_t in tables:
+        try:
+            d = df_t.copy()
+            if not isinstance(d.index, pd.RangeIndex):
+                d = d.reset_index()
+            d = d.fillna("")
+            n = len(d.columns)
+            if n == 0 or d.empty:
+                continue
+            col_w = (pdf.w - pdf.l_margin - pdf.r_margin) / n
+            max_chars = max(4, int(col_w / (1.5 if n > 6 else 1.8)))
+            heading(title)
+            pdf.set_font("Helvetica", "B", 7 if n > 6 else 8)
+            for c in d.columns:
+                pdf.cell(col_w, 6, _pdf_safe(str(c))[:max_chars], border=1,
+                         new_x=XPos.RIGHT, new_y=YPos.TOP)
+            pdf.ln(6)
+            pdf.set_font("Helvetica", "", 7 if n > 6 else 8)
+            for _, r in d.iterrows():
+                for v in r:
+                    if isinstance(v, float):
+                        v = round(v, 2)
+                    pdf.cell(col_w, 6, _pdf_safe(str(v))[:max_chars], border=1,
+                             new_x=XPos.RIGHT, new_y=YPos.TOP)
+                pdf.ln(6)
+            pdf.ln(3)
+        except Exception:
+            skipped.append(title)
+
+    if figures:
         pdf.add_page()
-        pdf.set_x(pdf.l_margin)
-        pdf.set_font("Helvetica", "B", 13)
-        pdf.set_fill_color(230, 230, 250)
-        pdf.cell(0, 8, "AI Research Summary", new_x=XPos.LMARGIN, new_y=YPos.NEXT, fill=True)
-        pdf.set_font("Helvetica", "", 10)
-        pdf.set_x(pdf.l_margin)
-        pdf.multi_cell(0, 6, _pdf_safe(ai_report_text))
+        heading("Charts")
+        pdf.ln(2)
+        for title, fig in figures:
+            try:
+                png = _fig_to_png(fig)
+                w = pdf.w - pdf.l_margin - pdf.r_margin
+                h = w * 550 / 1100
+                if pdf.get_y() + h + 12 > pdf.h - 15:
+                    pdf.add_page()
+                pdf.set_font("Helvetica", "B", 10)
+                pdf.cell(0, 6, _pdf_safe(title), **nl)
+                pdf.image(io.BytesIO(png), x=pdf.l_margin, w=w)
+                pdf.ln(4)
+            except Exception:
+                skipped.append(title)
+
+    for title, text in ai_texts:
+        if text:
+            pdf.add_page()
+            heading(title)
+            pdf.set_x(pdf.l_margin)
+            pdf.multi_cell(0, 6, _pdf_safe(text))
 
     pdf.ln(6)
     pdf.set_x(pdf.l_margin)
@@ -1299,7 +1371,7 @@ def build_research_pdf(stock_symbol, period, sections, ai_report_text=None, disc
     pdf.set_text_color(150, 150, 150)
     pdf.multi_cell(0, 5, _pdf_safe(disclaimer))
 
-    return bytes(pdf.output())
+    return bytes(pdf.output()), skipped
 
 # ─────────────────────────────────────────
 # TAB 1: SINGLE STOCK
@@ -1372,6 +1444,8 @@ with tab1:
                 df = calc_indicators(df)
                 latest = df.iloc[-1]
                 prev = df.iloc[-2]
+                prev = df.iloc[-2]
+                pdf_figs = []
                 # ─────────────────────────────────────────
 # FUNDAMENTAL METRICS
 # ─────────────────────────────────────────
@@ -2188,6 +2262,7 @@ with tab1:
                             use_container_width="stretch",
                             key="fcf_trend_chart"
                         )
+                        pdf_figs.append(("Free Cash Flow Trend", fig_fcf))
 
                         if len(fcf_trend_df.values) >= 2:
                             if fcf_trend_df.values[0] > fcf_trend_df.values[1]:
@@ -2245,6 +2320,7 @@ with tab1:
                             use_container_width="stretch",
                             key="debt_trend_chart"
                         )
+                        pdf_figs.append(("Total Debt Trend", fig_debt))
 
                         # ─────────────────────────────────────────
 # DEBT GROWTH / REDUCTION (YoY)
@@ -2522,6 +2598,7 @@ with tab1:
                         use_container_width="stretch",
                         key="historical_trend_chart"
                     )
+                    pdf_figs.append((f"{metric_choice} Trend", fig_trend))
 
                     # CAGR (oldest vs newest available data point)
                     start_value = chosen_series.iloc[0]
@@ -2768,6 +2845,7 @@ with tab1:
                             use_container_width="stretch",
                             key="pe_range_chart"
                         )
+                        pdf_figs.append(("P/E Trend", fig_pe_range))
 
                         st.caption(
                             "Note: Ye approximate P/E hai — trailing EPS ko constant maan ke calculate kiya gaya hai "
@@ -3259,6 +3337,7 @@ with tab1:
                         use_container_width="stretch",
                         key="stock_drawdown_chart"
                     )
+                    pdf_figs.append(("Drawdown", fig_dd))
 
                     # ─────────────────────────────────────────
 # AI RISK VERDICT
@@ -3575,6 +3654,7 @@ with tab1:
                             use_container_width="stretch",
                             key="multi_factor_radar"
                         )
+                        pdf_figs.append(("Multi-Factor Breakdown", fig_radar))
 
                     st.markdown("### 📋 Factor Score Breakdown")
 
@@ -3918,7 +3998,8 @@ with tab1:
                     xaxis_rangeslider_visible=False,
                     legend=dict(orientation="h", yanchor="bottom", y=1.02,
                             xanchor="right", x=1, font=dict(size=10)))
-                st.plotly_chart(fig, use_container_width="stretchS",key="nain_stock_chart")
+                st.plotly_chart(fig, use_container_width="stretch", key="nain_stock_chart")
+                pdf_figs.append((f"{sym} Price / RSI / MACD", fig))
 
                 st.markdown("---")
                 st.subheader("🏛 FII / DII Flow")
@@ -4446,6 +4527,7 @@ with tab1:
                                 use_container_width="stretch",
                                 key="news_sentiment_dist"
                             )
+                            pdf_figs.append(("News Sentiment", fig_nws))
 
                             # ─────────────────────────────────────────
                             # EVENT DETECTION
@@ -5153,6 +5235,7 @@ Max 350 words. End me likho: "Ye sirf research summary hai, investment advice na
                         use_container_width="stretch",
                         key="backtest_equity_chart"
                     )
+                    pdf_figs.append(("Backtest Equity Curve", fig_bt))
 
                     # ─────────────────────────────────────────
 # METRICS
@@ -5671,96 +5754,1134 @@ with tab2:
 # TAB 4 : AI COMPARISON
 # ====================================
 
+# ============================================================
+# AI COMPARISON — EVIDENCE-BASED RESEARCH DASHBOARD
+# ============================================================
+
 with tab3:
 
-    st.markdown("### 🤖 AI Stock Comparison")
-    st.caption("2 stocks ko compare karo")
+    st.markdown("## AI Comparison & Research Intelligence")
 
-    col1, col2 = st.columns(2)
+    st.caption(
+        "Evidence-based analysis of historical prices, "
+        "technical indicators, available fundamentals and risk."
+    )
 
-    with col1:
-        stock1 = st.text_input("Stock 1", value="RELIANCE", key="cmp1")
+    st.info(
+        "Research and education only. Scores are heuristic assessments, "
+        "not probabilities of profit or guaranteed investment outcomes."
+    )
 
-    with col2:
-        stock2 = st.text_input("Stock 2", value="TCS", key="cmp2")
+    # --------------------------------------------------------
+    # 1. INPUTS — independent exchange selection and historical basis
+    # --------------------------------------------------------
 
-    if st.button("⚔️ Compare Stocks", key="compare_btn"):
+    period_options = {
+        "1 month": "1mo",
+        "3 months": "3mo",
+        "6 months": "6mo",
+        "1 year": "1y",
+        "3 years": "3y",
+        "5 years": "5y",
+    }
 
-        s1 = stock1.upper().strip()
-        s2 = stock2.upper().strip()
+    input_columns = st.columns([1.55, 0.8, 1.55, 0.8, 1.25])
 
-        sym1 = s1 if s1.endswith(".NS") else s1 + ".NS"
-        sym2 = s2 if s2.endswith(".NS") else s2 + ".NS"
+    with input_columns[0]:
+        stock1 = st.text_input(
+            "First stock symbol",
+            value="RELIANCE",
+            placeholder="e.g. RELIANCE",
+            key="cmp1"
+        )
 
-        try:
-            df1 = yf.Ticker(sym1).history(period="1y")
-            df2 = yf.Ticker(sym2).history(period="1y")
+    with input_columns[1]:
+        exchange1 = st.selectbox(
+            "Exchange",
+            ["NSE", "BSE"],
+            key="cmp_exchange1"
+        )
 
-            if df1.empty or df2.empty:
-                st.error("Stock data nahi mila.")
-                st.stop()
+    with input_columns[2]:
+        stock2 = st.text_input(
+            "Second stock symbol",
+            value="TCS",
+            placeholder="e.g. TCS",
+            key="cmp2"
+        )
 
-            price1 = df1["Close"].iloc[-1]
-            price2 = df2["Close"].iloc[-1]
+    with input_columns[3]:
+        exchange2 = st.selectbox(
+            "Exchange",
+            ["NSE", "BSE"],
+            key="cmp_exchange2"
+        )
 
-           # rsi1 = ta.rsi(df1["Close"], length=14).dropna().iloc[-1]
-            #rsi2 = ta.rsi(df2["Close"], length=14).dropna().iloc[-1]
+    with input_columns[4]:
+        comparison_period_label = st.selectbox(
+            "Historical period",
+            list(period_options.keys()),
+            index=3,
+            key="cmp_period"
+        )
 
-            #macd1 = ta.macd(df1["Close"])
-            #macd2 = ta.macd(df2["Close"])
-            rsi1= 50 
-            rsi2 = 50
+    comparison_period = period_options[comparison_period_label]
 
-            m1 = 0
-            ms1 = 0
+    comparison_price_basis = st.radio(
+        "Historical price basis",
+        [
+            "Adjusted Close (corporate actions adjusted)",
+            "Unadjusted Close (raw closing price)",
+        ],
+        horizontal=True,
+        key="cmp_price_basis",
+        help=(
+            "Adjusted uses Yahoo Finance auto-adjusted OHLC prices. "
+            "Unadjusted uses raw Close prices. Both stocks use the same selected basis."
+        )
+    )
+    comparison_auto_adjust = comparison_price_basis.startswith("Adjusted")
 
-            m2 = 0
-            ms2 = 0
+    # --------------------------------------------------------
+    # 2. CONFIGURABLE FACTOR WEIGHTS
+    # --------------------------------------------------------
 
-            #m1 = macd1["MACD_12_26_9"].dropna().iloc[-1]
-            #ms1 = macd1["MACDs_12_26_9"].dropna().iloc[-1]
-            #m2 = macd2["MACD_12_26_9"].dropna().iloc[-1]
-            #ms2 = macd2["MACDs_12_26_9"].dropna().iloc[-1]
+    with st.expander(
+        "Scoring methodology & configurable weights",
+        expanded=False
+    ):
 
-            w52_1 = ((price1 - df1["Close"].min()) / (df1["Close"].max() - df1["Close"].min())) * 100
-            w52_2 = ((price2 - df2["Close"].min()) / (df2["Close"].max() - df2["Close"].min())) * 100
+        st.caption(
+            "Weights affect the research score only. "
+            "Missing factor scores are excluded and the remaining "
+            "weights are normalized."
+        )
 
-            _, _, _, trust1 = get_trust_scores(rsi1, m1, ms1, w52_1)
-            _, _, _, trust2 = get_trust_scores(rsi2, m2, ms2, w52_2)
+        scoring_weights = {}
 
-            sent1, bonus1 = get_news_sentiment(s1)
-            sent2, bonus2 = get_news_sentiment(s2)
+        weight_columns = st.columns(2)
 
-            final1 = trust1 + bonus1
-            final2 = trust2 + bonus2
+        for index, (factor, default_weight) in enumerate(
+            FACTOR_WEIGHTS.items()
+        ):
 
-            compare_df = pd.DataFrame({
-                "Metric": ["Price", "RSI", "52W Position", "Trust Score", "Sentiment", "Final Score"],
-                s1: [round(price1, 2), round(rsi1, 1), f"{w52_1:.0f}%", round(trust1, 0), sent1, round(final1, 0)],
-                s2: [round(price2, 2), round(rsi2, 1), f"{w52_2:.0f}%", round(trust2, 0), sent2, round(final2, 0)]
-            })
+            with weight_columns[index % 2]:
 
-            st.dataframe(compare_df, use_container_width="stretch")
+                scoring_weights[factor] = st.number_input(
+                    factor + " weight",
+                    min_value=0.0,
+                    max_value=100.0,
+                    value=float(default_weight),
+                    step=1.0,
+                    key="cmp_weight_" + factor
+                )
 
-            winner = s1 if final1 > final2 else s2
-            winner_score = final1 if final1 > final2 else final2
+        st.markdown("**Scoring interpretation**")
 
-            st.success(f"🏆 Better Pick: {winner} | Final Score: {winner_score:.0f}/100")
+        st.write(
+            "Trend & Momentum: moving averages, RSI, MACD and returns."
+        )
 
-            st.markdown("### ⚔️ Multi-Stock Battle")
+        st.write(
+            "Business Quality: available profitability metrics."
+        )
 
-            loser = s2 if winner == s1 else s1
-            loser_score = final2 if winner == s1 else final1
-            score_gap = abs(final1 - final2)
+        st.write(
+            "Growth: available revenue and earnings growth."
+        )
 
-            st.success(f"🥇 Winner: {winner} | Score: {winner_score:.0f}/100")
-            st.warning(f"🥈 Runner Up: {loser} | Score: {loser_score:.0f}/100")
-            st.info(f"📊 Score Difference: {score_gap:.0f} points")
+        st.write(
+            "Valuation: broad P/E and P/B thresholds."
+        )
 
+        st.write(
+            "Financial Strength: available debt, liquidity and cash-flow metrics."
+        )
 
-        except Exception as e:
-            st.error(f"Error: {e}")
+        st.write(
+            "Risk Control: historical volatility, drawdown and ATR."
+        )
 
+        st.write(
+            "Data Confidence: observation count and factor-data coverage."
+        )
+
+        st.warning(
+            "These are transparent research heuristics. "
+            "They are not statistically calibrated predictions."
+        )
+
+    # --------------------------------------------------------
+    # 3. FETCH DATA AND RUN THE RESEARCH ENGINE
+    # --------------------------------------------------------
+
+    run_analysis = st.button(
+    "Run / Refresh Evidence Analysis",
+    type="primary",
+    use_container_width=True,
+    key="cmp_run_evidence"
+)
+
+    if run_analysis:
+
+        # A new run invalidates the previous comparison so old charts/memos
+        # cannot be mistaken for the newly selected tickers or price basis.
+        st.session_state.pop("ai_comparison_results", None)
+        st.session_state.pop("ai_comparison_memo", None)
+
+        symbol1 = stock1.strip().upper()
+        symbol2 = stock2.strip().upper()
+
+        if not symbol1 or not symbol2:
+
+            st.error("Enter both stock symbols.")
+
+        else:
+
+            try:
+
+                yf_symbol1 = normalize_comparison_symbol(symbol1, exchange1)
+                yf_symbol2 = normalize_comparison_symbol(symbol2, exchange2)
+
+                if yf_symbol1 == yf_symbol2:
+
+                    st.error(
+                        "Choose two different stocks for comparison."
+                    )
+
+                else:
+
+                    results = []
+
+                    with st.spinner(
+                        "Fetching market data and calculating research metrics..."
+                    ):
+
+                        # Benchmark data is optional.
+                        try:
+
+                            benchmark = get_stock_data(
+                                "^NSEI",
+                                comparison_period,
+                                auto_adjust=comparison_auto_adjust
+                            )
+
+                        except Exception:
+
+                            benchmark = pd.DataFrame()
+
+                                                    # Normalize benchmark dates to match cleaned stock histories.
+                        if isinstance(benchmark, pd.DataFrame) and not benchmark.empty:
+                            benchmark, _ = clean_history(benchmark)
+
+                        timeline_items = []
+                        all_history_warnings = []
+
+                        for display_symbol, exchange_label, yf_symbol in [
+                            (symbol1, exchange1, yf_symbol1),
+                            (symbol2, exchange2, yf_symbol2)
+                        ]:
+
+                            ticker = yf.Ticker(yf_symbol)
+
+                            # Historical OHLCV — cached and on the same selected price basis.
+                            try:
+                                raw_history = get_stock_data(
+                                    yf_symbol,
+                                    comparison_period,
+                                    auto_adjust=comparison_auto_adjust
+                                )
+                            except Exception:
+                                raw_history = pd.DataFrame()
+
+                            history, history_warnings = clean_history(raw_history)
+                            timeline_label = f"{display_symbol} ({exchange_label})"
+                            timeline_items.append({
+                                "symbol": display_symbol,
+                                "label": timeline_label,
+                                "exchange": exchange_label,
+                                "ticker_symbol": yf_symbol,
+                                "history": history,
+                                "warnings": history_warnings,
+                            })
+                            all_history_warnings.extend(
+                                [f"{timeline_label}: {warning}" for warning in history_warnings]
+                            )
+
+                            # Fundamental profile.
+                            try:
+
+                                info = ticker.info or {}
+
+                            except Exception:
+
+                                info = {}
+
+                            # Income statement.
+                            try:
+
+                                financials = ticker.financials
+
+                            except Exception:
+
+                                financials = pd.DataFrame()
+
+                            research = analyze_stock(
+                                symbol=display_symbol,
+                                history=history,
+                                info=info,
+                                financials=financials,
+                                benchmark=(
+                                    benchmark
+                                    if not benchmark.empty
+                                    else None
+                                )
+                            )
+
+                            research["symbol"] = display_symbol
+                            research["ticker_symbol"] = yf_symbol
+
+                            research["weighted_score"] = (
+                                weighted_research_score(
+                                    research.get("factors", {}),
+                                    scoring_weights
+                                )
+                            )
+
+                            results.append(research)
+
+                    history1 = timeline_items[0]["history"] if timeline_items else pd.DataFrame()
+                    history2 = timeline_items[1]["history"] if len(timeline_items) > 1 else pd.DataFrame()
+                    label1 = timeline_items[0]["label"] if timeline_items else symbol1
+                    label2 = timeline_items[1]["label"] if len(timeline_items) > 1 else symbol2
+
+                    chart_metrics1 = calculate_price_metrics(history1)
+                    chart_metrics2 = calculate_price_metrics(history2)
+                    chart_divergence = divergence_evidence(history1, history2)
+                    chart_ai_evidence = ai_evidence_payload(
+                        label1=label1,
+                        metrics1=chart_metrics1,
+                        label2=label2,
+                        metrics2=chart_metrics2,
+                        divergence=chart_divergence,
+                        price_basis=comparison_price_basis,
+                        requested_period=comparison_period_label,
+                        data_warnings=all_history_warnings,
+                    )
+
+                    st.session_state[
+                        "ai_comparison_results"
+                    ] = {
+                        "stocks": results,
+                        "period": comparison_period,
+                        "period_label": comparison_period_label,
+                        "weights": scoring_weights,
+                        "price_basis": comparison_price_basis,
+                        "auto_adjust": comparison_auto_adjust,
+                        "timeline": timeline_items,
+                        "chart_metrics": {
+                            label1: chart_metrics1,
+                            label2: chart_metrics2,
+                        },
+                        "divergence": chart_divergence,
+                        "ai_evidence": chart_ai_evidence,
+                        "history_warnings": all_history_warnings,
+                        "fetched_at": pd.Timestamp.now().strftime(
+                            "%Y-%m-%d %H:%M:%S"
+                        )
+                    }
+
+                    # New data means any old AI memo is stale.
+                    st.session_state.pop(
+                        "ai_comparison_memo",
+                        None
+                    )
+
+            except Exception as exc:
+
+                st.error(
+                    "Research analysis could not be completed. "
+                    "Check the market-data connection and stock symbols."
+                )
+
+                st.caption(str(exc))
+
+    # --------------------------------------------------------
+    # 4. DISPLAY RESULTS
+    # --------------------------------------------------------
+
+        # ============================================================
+    # 4. DISPLAY RESULTS — SAFE RENDERING
+    # ============================================================
+
+    saved_results = st.session_state.get(
+        "ai_comparison_results"
+    )
+
+    stocks = []
+    period_used = None
+    fetched_at = None
+
+    if isinstance(saved_results, dict):
+
+        raw_stocks = saved_results.get("stocks", [])
+
+        if isinstance(raw_stocks, list):
+            stocks = [
+                item
+                for item in raw_stocks
+                if isinstance(item, dict)
+                and item.get("symbol")
+            ]
+
+        period_used = saved_results.get("period")
+        fetched_at = saved_results.get("fetched_at")
+
+    if not stocks:
+
+        st.info(
+            "Enter two stock symbols and click "
+            "'Run Evidence Analysis' to calculate the comparison."
+        )
+
+    else:
+
+        # --------------------------------------------------------
+        # Analysis timestamp
+        # --------------------------------------------------------
+
+        if fetched_at:
+            st.caption(
+                f"Analysis data fetched at: {fetched_at} "
+                "(local machine time)"
+            )
+
+        # --------------------------------------------------------
+        # Interactive dual-stock timeline and computed statistics
+        # --------------------------------------------------------
+
+        timeline_items = saved_results.get("timeline", []) if isinstance(saved_results, dict) else []
+        chart_metrics = saved_results.get("chart_metrics", {}) if isinstance(saved_results, dict) else {}
+        history_warnings = saved_results.get("history_warnings", []) if isinstance(saved_results, dict) else []
+        saved_price_basis = saved_results.get("price_basis", "Adjusted Close (corporate actions adjusted)")
+        saved_period_label = saved_results.get("period_label", period_used or "Selected period")
+
+        st.markdown("---")
+        st.markdown("### Interactive Dual-Stock Timeline")
+        st.caption(
+            f"Period: {saved_period_label} · Price basis: {saved_price_basis}. "
+            "Total return uses each stock's own first and last valid observations; "
+            "normalized comparison uses common valid dates only."
+        )
+
+        valid_timeline_items = [
+            item for item in timeline_items
+            if isinstance(item, dict)
+            and isinstance(item.get("history"), pd.DataFrame)
+            and not item["history"].empty
+        ]
+
+        if len(valid_timeline_items) < 2:
+            st.warning(
+                "Timeline data is unavailable for one or both stocks. Check the ticker, exchange, "
+                "history availability and data-quality warnings, then run the comparison again."
+            )
+            if history_warnings:
+                with st.expander("Timeline data-quality warnings", expanded=True):
+                    for warning in dict.fromkeys(history_warnings):
+                        st.warning(warning)
+        else:
+            timeline1, timeline2 = valid_timeline_items[:2]
+            chart_mode = st.radio(
+                "Chart mode",
+                ["Actual closing prices", "Normalized performance (start = 100)"],
+                horizontal=True,
+                key="cmp_timeline_mode",
+                help=(
+                    "Actual prices show rupee closing prices. Normalized performance rebases both stocks "
+                    "to 100 on the first shared valid date; share prices themselves do not measure which stock performed better."
+                )
+            )
+
+            try:
+                timeline_figure, chart_warnings = build_timeline_figure(
+                    timeline1["history"],
+                    timeline2["history"],
+                    timeline1["label"],
+                    timeline2["label"],
+                    mode=chart_mode,
+                )
+                st.plotly_chart(
+                    timeline_figure,
+                    use_container_width=True,
+                    key="cmp_dual_stock_timeline"
+                )
+                st.caption(
+                    "Hover for trading date, Close price and daily change. Plotly's toolbar supports zoom, pan and reset; "
+                    "the bottom range slider supports range selection. Long data gaps are shown as broken lines, not filled prices."
+                )
+            except ValueError as chart_error:
+                chart_warnings = [str(chart_error)]
+                st.warning(
+                    f"Chart could not be drawn in the selected mode: {chart_error} "
+                    "Try Actual closing prices if the stocks do not have enough common trading dates."
+                )
+
+            # The current original Close is shown separately for each ticker.
+            price_columns = st.columns(2)
+            for price_column, item in zip(price_columns, [timeline1, timeline2]):
+                item_metrics = calculate_price_metrics(item["history"])
+                with price_column:
+                    st.metric(
+                        f"Latest Close — {item['label']}",
+                        (
+                            f"₹{item_metrics['last_close']:,.2f}"
+                            if item_metrics.get("valid") else "N/A"
+                        ),
+                        (
+                            f"{item_metrics['total_return']:+.2%} total return"
+                            if item_metrics.get("valid") else None
+                        ),
+                    )
+                    if item_metrics.get("valid"):
+                        st.caption(
+                            f"First valid observation: {item_metrics['first_date']} · "
+                            f"Last valid observation: {item_metrics['last_date']} · "
+                            f"{item_metrics['observations']} observations"
+                        )
+
+            st.markdown("#### Historical Performance & Risk Statistics")
+            stat_columns = st.columns(2)
+            for stat_column, item in zip(stat_columns, [timeline1, timeline2]):
+                item_metrics = calculate_price_metrics(item["history"])
+                with stat_column:
+                    st.markdown(f"**{item['label']}**")
+                    if not item_metrics.get("valid"):
+                        st.info(item_metrics.get("reason", "Insufficient valid history."))
+                        continue
+                    m1, m2 = st.columns(2)
+                    m3, m4 = st.columns(2)
+                    m1.metric("Total return", f"{item_metrics['total_return']:+.2%}")
+                    annualized = item_metrics.get("annualized_return")
+                    m2.metric("Annualized return", f"{annualized:+.2%}" if annualized is not None else "N/A")
+                    m3.metric("Maximum drawdown", f"{item_metrics['max_drawdown']:.2%}")
+                    volatility = item_metrics.get("annualized_volatility")
+                    m4.metric("Annualized volatility", f"{volatility:.2%}" if volatility is not None else "N/A")
+                    st.caption(
+                        f"Maximum drawdown peak: {item_metrics['drawdown_peak_date']} · "
+                        f"Trough: {item_metrics['drawdown_trough_date']}"
+                    )
+                    if annualized is None:
+                        st.caption("Annualized return is not shown because the observed date span is under one year.")
+
+            combined_warnings = list(dict.fromkeys(list(history_warnings) + list(chart_warnings)))
+            if combined_warnings:
+                with st.expander("Timeline data-quality warnings", expanded=True):
+                    for warning in combined_warnings:
+                        st.warning(warning)
+
+        st.markdown("---")
+        st.markdown("### Research Score Comparison")
+
+        score_columns = st.columns(len(stocks))
+
+        for index, research in enumerate(stocks):
+
+            with score_columns[index]:
+
+                symbol = research["symbol"]
+
+                score_info = research.get(
+                    "weighted_score",
+                    {}
+                )
+
+                if not isinstance(score_info, dict):
+                    score_info = {}
+
+                score = pd.to_numeric(
+                    score_info.get("score"),
+                    errors="coerce"
+                )
+
+                st.markdown(f"#### {symbol}")
+
+                st.metric(
+                    "Research score",
+                    (
+                        f"{score:.1f}/100"
+                        if pd.notna(score)
+                        else "N/A"
+                    )
+                )
+
+                st.caption(
+                    "Available configured weight: "
+                    f"{score_info.get('available_weight_pct', 0):.1f}%"
+                )
+
+                st.caption(
+                    "Source: Yahoo Finance, when data is available."
+                )
+
+        # --------------------------------------------------------
+        # Factor comparison
+        # --------------------------------------------------------
+
+        st.markdown("### Factor Breakdown")
+
+        factor_names = list(FACTOR_WEIGHTS.keys())
+        factor_rows = []
+
+        for factor in factor_names:
+
+            row = {"Factor": factor}
+
+            for research in stocks:
+
+                value = research.get(
+                    "factors",
+                    {}
+                ).get(factor)
+
+                row[research["symbol"]] = (
+                    round(float(value), 2)
+                    if value is not None
+                    and pd.notna(value)
+                    else None
+                )
+
+            factor_rows.append(row)
+
+        factor_df = pd.DataFrame(factor_rows)
+
+        st.dataframe(
+            factor_df,
+            use_container_width=True,
+            hide_index=True
+        )
+
+        # --------------------------------------------------------
+        # Per-stock research details
+        # --------------------------------------------------------
+
+        st.markdown("### Technical & Fundamental Evidence")
+
+        stock_tabs = st.tabs(
+            [research["symbol"] for research in stocks]
+        )
+
+        for stock_tab, research in zip(stock_tabs, stocks):
+
+            with stock_tab:
+
+                metrics = research.get("metrics", {})
+
+                if metrics:
+
+                    metrics_df = pd.DataFrame(
+                        [
+                            {
+                                "Metric": metric,
+                                "Value": value
+                            }
+                            for metric, value in metrics.items()
+                        ]
+                    )
+
+                    st.dataframe(
+                        metrics_df,
+                        use_container_width=True,
+                        hide_index=True
+                    )
+
+                else:
+
+                    st.warning(
+                        "Historical metrics are unavailable."
+                    )
+
+                # Latest observation and freshness
+                latest_date = research.get("latest_date")
+
+                if latest_date:
+
+                    latest_dt = pd.to_datetime(
+                        latest_date,
+                        errors="coerce"
+                    )
+
+                    if pd.notna(latest_dt):
+
+                        observation_day = latest_dt.date()
+
+                        age_days = (
+                            pd.Timestamp.now().date()
+                            - observation_day
+                        ).days
+
+                        st.caption(
+                            f"Latest historical observation: "
+                            f"{observation_day}"
+                        )
+
+                        if age_days < 0:
+
+                            st.warning(
+                                "Observation date is in the future. "
+                                "Verify the source data."
+                            )
+
+                        elif age_days > 7:
+
+                            st.warning(
+                                f"Data may be stale: "
+                                f"{age_days} calendar days old."
+                            )
+
+                        else:
+
+                            st.caption(
+                                f"Observation is {age_days} "
+                                "calendar day(s) old."
+                            )
+
+                    else:
+
+                        st.warning(
+                            "Observation date could not be validated."
+                        )
+
+                else:
+
+                    st.warning(
+                        "Observation date is unavailable."
+                    )
+
+                # Factor score contributions
+                score_info = research.get(
+                    "weighted_score",
+                    {}
+                )
+
+                contributions = score_info.get(
+                    "contributions",
+                    {}
+                )
+
+                st.markdown("#### Score Contributions")
+
+                if contributions:
+
+                    contribution_rows = []
+
+                    for factor, details in contributions.items():
+
+                        contribution_rows.append(
+                            {
+                                "Factor": factor,
+                                "Score": details["score"],
+                                "Effective Weight (%)": round(
+                                    details["effective_weight_pct"],
+                                    2
+                                ),
+                                "Points Contributed": round(
+                                    details["points_contributed"],
+                                    2
+                                )
+                            }
+                        )
+
+                    st.dataframe(
+                        pd.DataFrame(contribution_rows),
+                        use_container_width=True,
+                        hide_index=True
+                    )
+
+                else:
+
+                    st.info(
+                        "Insufficient data to calculate factor contributions."
+                    )
+
+                # Bull / Base / Bear scenarios
+                st.markdown("#### Bull, Base & Bear Scenarios")
+
+                scenarios = research.get("scenarios", {})
+
+                scenario_columns = st.columns(3)
+
+                for column, scenario_name in zip(
+                    scenario_columns,
+                    ["Bull", "Base", "Bear"]
+                ):
+
+                    with column:
+
+                        scenario = scenarios.get(
+                            scenario_name,
+                            {}
+                        )
+
+                        st.markdown(f"##### {scenario_name}")
+
+                        st.write("**Assumptions**")
+                        st.write(
+                            scenario.get(
+                                "Assumptions",
+                                "Unavailable"
+                            )
+                        )
+
+                        st.write("**Evidence**")
+                        st.write(
+                            scenario.get(
+                                "Evidence",
+                                "Unavailable"
+                            )
+                        )
+
+                        st.write("**Invalidation**")
+                        st.write(
+                            scenario.get(
+                                "Invalidation",
+                                "Unavailable"
+                            )
+                        )
+
+                # Reliability and missing-data warnings
+                warnings = research.get("warnings", [])
+
+                if warnings:
+
+                    with st.expander(
+                        "Data limitations and warnings",
+                        expanded=True
+                    ):
+
+                        for warning in warnings:
+                            st.warning(warning)
+
+        # --------------------------------------------------------
+        # Position sizing
+        # --------------------------------------------------------
+
+        st.markdown("---")
+        st.markdown("### Illustrative Position-Sizing Assistant")
+
+        st.caption(
+            "Research scenario only. Stop execution is not guaranteed; "
+            "gaps, slippage and costs can increase losses."
+        )
+
+        selected_stock = st.selectbox(
+            "Stock for position-sizing scenario",
+            [research["symbol"] for research in stocks],
+            key="cmp_position_stock"
+        )
+
+        selected_research = next(
+            research
+            for research in stocks
+            if research["symbol"] == selected_stock
+        )
+
+        selected_metrics = selected_research.get(
+            "metrics",
+            {}
+        )
+
+        p1, p2, p3 = st.columns(3)
+
+        with p1:
+
+            capital = st.number_input(
+                "Portfolio capital (₹)",
+                min_value=1000.0,
+                value=100000.0,
+                step=5000.0,
+                key="cmp_position_capital"
+            )
+
+        with p2:
+
+            risk_budget_pct = st.number_input(
+                "Risk budget (%)",
+                min_value=0.1,
+                max_value=5.0,
+                value=1.0,
+                step=0.1,
+                key="cmp_risk_budget"
+            )
+
+        with p3:
+
+            max_exposure_pct = st.number_input(
+                "Maximum exposure (%)",
+                min_value=1.0,
+                max_value=100.0,
+                value=20.0,
+                step=1.0,
+                key="cmp_max_exposure"
+            )
+
+        position_result = calculate_position_size(
+            price=selected_metrics.get("Price"),
+            atr=selected_metrics.get("ATR14"),
+            capital=capital,
+            risk_budget_pct=risk_budget_pct,
+            max_exposure_pct=max_exposure_pct,
+            atr_multiple=2.0
+        )
+
+        if position_result.get("available"):
+
+            c1, c2, c3 = st.columns(3)
+
+            c1.metric(
+                "Illustrative quantity",
+                position_result["illustrative_quantity"]
+            )
+
+            c2.metric(
+                "Estimated exposure",
+                f"₹{position_result['estimated_exposure']:,.2f}"
+            )
+
+            c3.metric(
+                "Scenario loss",
+                f"₹{position_result['estimated_stop_scenario_loss']:,.2f}"
+            )
+
+            st.caption(
+                "Hypothetical stop reference: "
+                f"₹{position_result['illustrative_stop_reference']:,.2f}"
+            )
+
+            st.warning(position_result["warning"])
+
+        else:
+
+            st.info(
+                position_result.get(
+                    "reason",
+                    "Position-sizing inputs are unavailable."
+                )
+            )
+
+        # --------------------------------------------------------
+        # CSV export
+        # --------------------------------------------------------
+
+        st.markdown("---")
+
+        export_rows = []
+
+        for research in stocks:
+
+            symbol = research["symbol"]
+
+            for metric, value in research.get(
+                "metrics",
+                {}
+            ).items():
+
+                export_rows.append(
+                    {
+                        "Stock": symbol,
+                        "Category": "Metric",
+                        "Name": metric,
+                        "Value": value
+                    }
+                )
+
+            for factor, value in research.get(
+                "factors",
+                {}
+            ).items():
+
+                export_rows.append(
+                    {
+                        "Stock": symbol,
+                        "Category": "Factor",
+                        "Name": factor,
+                        "Value": value
+                    }
+                )
+
+            score = research.get(
+                "weighted_score",
+                {}
+            ).get("score")
+
+            export_rows.append(
+                {
+                    "Stock": symbol,
+                    "Category": "Research",
+                    "Name": "Research Score",
+                    "Value": score
+                }
+            )
+
+        export_df = pd.DataFrame(export_rows)
+
+        st.download_button(
+            "Download Research Results (CSV)",
+            data=export_df.to_csv(index=False).encode("utf-8"),
+            file_name="bharatfinai_ai_comparison.csv",
+            mime="text/csv",
+            key="cmp_export_csv"
+        )
+
+        # --------------------------------------------------------
+        # Single-provider AI research memo
+        # --------------------------------------------------------
+
+        st.markdown("---")
+        st.markdown("### AI Research Memo")
+
+        st.caption(
+            "Uses the configured Groq model. This is not independent "
+            "multi-model consensus."
+        )
+
+        if st.button(
+            "Generate AI Research Memo",
+            key="cmp_generate_ai_memo"
+        ):
+
+            try:
+
+                try:
+                    memo_api_key = st.secrets.get("GROQ_API_KEY")
+                except Exception:
+                    memo_api_key = None
+
+                memo_api_key = (
+                    memo_api_key
+                    or os.getenv("GROQ_API_KEY")
+                )
+
+                if not memo_api_key:
+
+                    st.error("GROQ_API_KEY is not configured.")
+
+                else:
+
+                    memo_facts = []
+
+                    for research in stocks:
+
+                        memo_facts.append(
+                            {
+                                "symbol": research["symbol"],
+                                "metrics": research.get("metrics", {}),
+                                "factors": research.get("factors", {}),
+                                "scenarios": research.get("scenarios", {}),
+                                "warnings": research.get("warnings", [])
+                            }
+                        )
+
+                    timeline_evidence = (
+                        st.session_state.get("ai_comparison_results", {}).get("ai_evidence", {})
+                    )
+
+                    prompt = f"""
+You are a cautious Indian equity research analyst.
+
+Use only the supplied research data:
+{memo_facts}
+
+Computed historical timeline statistics and divergence evidence:
+{timeline_evidence}
+
+Explain relative historical performance, the supplied maximum drawdowns and their peak/trough dates,
+volatility differences, and periods of relative-performance divergence. Use only dates and statistics
+present in the supplied evidence. The chart alone does not establish why a price moved; do not invent
+causes, market events, price history, exact turning points, targets, catalysts or future prices. Only
+mention a cause if it is explicitly supported by supplied research/news data; otherwise state that the
+cause cannot be established from these chart statistics alone.
+
+Do not invent fundamentals, news, targets or catalysts. Explain Bull, Base and Bear cases, material risks,
+missing evidence, and what could change each assessment. Distinguish historical observations from future
+scenarios. Do not promise returns or label a research score as probability of profit. Do not declare a
+future winner or guaranteed outcome.
+
+Write in clear Hinglish with these headings:
+1. Executive Summary
+2. Historical Performance & Divergence
+3. Drawdowns and Volatility
+4. Bull, Base and Bear Scenarios
+5. Major Risks and Missing Evidence
+6. Limitations
+
+This is educational research, not personalized financial advice.
+"""
+
+                    with st.spinner(
+                        "Generating AI research memo..."
+                    ):
+
+                        client = Groq(
+                            api_key=memo_api_key,
+                            timeout=30.0,
+                            max_retries=1
+                        )
+
+                        response = client.chat.completions.create(
+                            model="openai/gpt-oss-120b",
+                            messages=[
+                                {
+                                    "role": "user",
+                                    "content": prompt
+                                }
+                            ],
+                            max_tokens=1400,
+                            temperature=0.2
+                        )
+
+                        memo = (
+                            response.choices[0]
+                            .message.content
+                        )
+
+                        if not memo:
+                            raise ValueError(
+                                "The AI provider returned an empty response."
+                            )
+
+                        st.session_state[
+                            "ai_comparison_memo"
+                        ] = memo
+
+            except Exception as exc:
+
+                st.error(
+                    "The research memo could not be generated."
+                )
+
+                st.caption(str(exc))
+
+        memo = st.session_state.get(
+            "ai_comparison_memo"
+        )
+
+        if memo:
+
+            st.markdown(memo)
+
+            st.download_button(
+                "Download AI Research Memo",
+                data=memo.encode("utf-8"),
+                file_name="bharatfinai_ai_research_memo.txt",
+                mime="text/plain",
+                key="cmp_download_memo"
+            )
+
+        st.caption(
+            "Historical estimates and AI interpretations cannot "
+            "guarantee future market outcomes."
+        )
 # -----------------------------------
 # PORTFOLIO TRACKER UPGRADE
 # -----------------------------------
@@ -6122,432 +7243,4267 @@ st.sidebar.download_button(
     mime="text/plain"
 )
 with tab4:
-    st.markdown("### 📊 Phase 4 — Quant Systems")
-    q_symbol = st.text_input("Backtest Stock", value="RELIANCE", key="q_stock")
-    q_period = st.selectbox("Backtest Period", ["6mo", "1y", "2y", "5y"], index=1)
+    # ============================================================
+    # BHARATFINAI — QUANT LAB V2
+    # Strategy Builder + Backtester + Risk + Factor + Research
+    # ============================================================
 
-    if st.button("Run Backtest"):
-        sym = q_symbol.upper()
-        yf_symbol = sym if sym.endswith(".NS") else sym + ".NS"
-        df = yf.Ticker(yf_symbol).history(period=q_period)
+    st.markdown("## 🧮 Quant Lab")
+    st.caption(
+        "Research-grade quantitative workspace for strategy design, "
+        "backtesting, risk analysis, factor research and benchmark comparison."
+    )
 
-        if df.empty:
-            st.error("Data nahi mila")
-        else:
-            df["SMA20"] = df["Close"].rolling(20).mean()
-            df["SMA50"] = df["Close"].rolling(50).mean()
+    # ============================================================
+    # 1. BASIC CONTROLS
+    # ============================================================
 
-            df["Signal"] = 0
-            df.loc[df["SMA20"] > df["SMA50"], "Signal"] = 1
-            df.loc[df["SMA20"] <= df["SMA50"], "Signal"] = 0
+    c1, c2, c3 = st.columns([1.1, 1.1, 1.2])
 
-            df["Return"] = df["Close"].pct_change()
-            df["Strategy"] = df["Signal"].shift(1) * df["Return"]
+    with c1:
+        q_symbol = st.text_input(
+            "Stock / NSE Symbol",
+            value="RELIANCE",
+            key="quant_v2_symbol"
+        )
 
-            # Trade Statistics
+    with c2:
+        q_period = st.selectbox(
+            "Historical Period",
+            ["6mo", "1y", "2y", "5y", "10y"],
+            index=2,
+            key="quant_v2_period"
+        )
 
-            trade_changes = df["Signal"].diff().fillna(0)
+    with c3:
+        q_capital = st.number_input(
+            "Initial Capital (₹)",
+            min_value=1000.0,
+            value=100000.0,
+            step=10000.0,
+            key="quant_v2_capital"
+        )
 
-            total_trades = int((trade_changes != 0).sum())
+    q_yf_symbol = q_symbol.strip().upper()
 
-            winning_trades = int(
-                ((df["Strategy"] > 0) & (trade_changes != 0)).sum()
+    if q_yf_symbol and not q_yf_symbol.startswith("^") and "." not in q_yf_symbol:
+        q_yf_symbol += ".NS"
+
+    # ============================================================
+    # DATA FUNCTIONS
+    # ============================================================
+
+    @st.cache_data(ttl=600)
+    def quant_get_history(symbol, period):
+        try:
+            df = yf.Ticker(symbol).history(
+                period=period,
+                auto_adjust=True
             )
 
-            win_rate = (
-                winning_trades / total_trades * 100
-                if total_trades > 0
-                else 0
+            if df.empty:
+                return pd.DataFrame()
+
+            df = df.copy()
+
+            if isinstance(df.index, pd.DatetimeIndex):
+                df.index = df.index.tz_localize(None)
+
+            return df
+
+        except Exception:
+            return pd.DataFrame()
+
+
+    @st.cache_data(ttl=600)
+    def quant_get_nifty(period):
+        try:
+            df = yf.Ticker("^NSEI").history(
+                period=period,
+                auto_adjust=True
             )
 
-            total_return = (1 + df["Strategy"].fillna(0)).prod() - 1
-            days = (df.index[-1] - df.index[0]).days
+            if df.empty:
+                return pd.DataFrame()
 
-            cagr = (
-                ((1 + total_return) ** (365 / days) - 1) * 100
-                if days > 0
-                else 0
+            df = df.copy()
+
+            if isinstance(df.index, pd.DatetimeIndex):
+                df.index = df.index.tz_localize(None)
+
+            return df
+
+        except Exception:
+            return pd.DataFrame()
+
+
+    # ============================================================
+    # FEATURE ENGINE
+    # ============================================================
+
+    def quant_features(df):
+
+        d = df.copy()
+
+        if d.empty:
+            return d
+
+        close = d["Close"]
+
+        d["Return"] = close.pct_change()
+
+        # Moving averages
+        d["SMA20"] = close.rolling(20).mean()
+        d["SMA50"] = close.rolling(50).mean()
+        d["SMA100"] = close.rolling(100).mean()
+        d["SMA200"] = close.rolling(200).mean()
+
+        d["EMA20"] = close.ewm(span=20, adjust=False).mean()
+        d["EMA50"] = close.ewm(span=50, adjust=False).mean()
+
+        # Momentum
+        d["Momentum20"] = close.pct_change(20)
+        d["Momentum60"] = close.pct_change(60)
+
+        # Volatility
+        d["Volatility20"] = d["Return"].rolling(20).std() * np.sqrt(252)
+
+        # RSI
+        delta = close.diff()
+
+        gain = delta.clip(lower=0)
+        loss = -delta.clip(upper=0)
+
+        avg_gain = gain.rolling(14).mean()
+        avg_loss = loss.rolling(14).mean()
+
+        rs = avg_gain / avg_loss.replace(0, np.nan)
+
+        d["RSI"] = 100 - (100 / (1 + rs))
+
+        # Bollinger Bands
+        bb_mid = close.rolling(20).mean()
+        bb_std = close.rolling(20).std()
+
+        d["BB_Middle"] = bb_mid
+        d["BB_Upper"] = bb_mid + 2 * bb_std
+        d["BB_Lower"] = bb_mid - 2 * bb_std
+
+        # Z-score
+        d["ZScore"] = (
+            close - bb_mid
+        ) / bb_std.replace(0, np.nan)
+
+        # Breakout
+        d["High20"] = close.rolling(20).max()
+        d["Low20"] = close.rolling(20).min()
+
+        # ATR
+        high_low = d["High"] - d["Low"]
+        high_close = abs(d["High"] - d["Close"].shift())
+        low_close = abs(d["Low"] - d["Close"].shift())
+
+        tr = pd.concat(
+            [high_low, high_close, low_close],
+            axis=1
+        ).max(axis=1)
+
+        d["ATR14"] = tr.rolling(14).mean()
+
+        return d
+
+
+    # ============================================================
+    # STRATEGY ENGINE
+    # ============================================================
+
+    def quant_signal(d, strategy, params):
+
+        signal = pd.Series(
+            0.0,
+            index=d.index
+        )
+
+        # --------------------------------------------------------
+        # SMA CROSSOVER
+        # --------------------------------------------------------
+
+        if strategy == "SMA Crossover":
+
+            fast = params["fast"]
+            slow = params["slow"]
+
+            fast_ma = d["Close"].rolling(fast).mean()
+            slow_ma = d["Close"].rolling(slow).mean()
+
+            signal = (
+                fast_ma > slow_ma
+            ).astype(float)
+
+        # --------------------------------------------------------
+        # EMA CROSSOVER
+        # --------------------------------------------------------
+
+        elif strategy == "EMA Crossover":
+
+            fast = params["fast"]
+            slow = params["slow"]
+
+            fast_ma = d["Close"].ewm(
+                span=fast,
+                adjust=False
+            ).mean()
+
+            slow_ma = d["Close"].ewm(
+                span=slow,
+                adjust=False
+            ).mean()
+
+            signal = (
+                fast_ma > slow_ma
+            ).astype(float)
+
+        # --------------------------------------------------------
+        # RSI MEAN REVERSION
+        # --------------------------------------------------------
+
+        elif strategy == "RSI Mean Reversion":
+
+            buy_level = params["rsi_buy"]
+            exit_level = params["rsi_exit"]
+
+            signal = (
+                d["RSI"] < buy_level
+            ).astype(float)
+
+            # Exit when RSI becomes strong
+            signal = signal.where(
+                d["RSI"] < exit_level,
+                0
             )
 
-            rolling_max = df["Close"].cummax()
-            drawdown = (df["Close"] - rolling_max) / rolling_max
+        # --------------------------------------------------------
+        # BOLLINGER MEAN REVERSION
+        # --------------------------------------------------------
 
-            max_drawdown = abs(drawdown.min()) * 100
+        elif strategy == "Bollinger Mean Reversion":
 
-            calmar = (
-                cagr / max_drawdown
-                if max_drawdown != 0
-                else 0
+            signal = (
+                d["Close"] < d["BB_Lower"]
+            ).astype(float)
+
+            signal = signal.where(
+                d["Close"] < d["BB_Middle"],
+                0
             )
 
-            buy_hold = (
-                (df["Close"].dropna().iloc[-1] /
-                df["Close"].dropna().iloc[0]) - 1
+        # --------------------------------------------------------
+        # MOMENTUM
+        # --------------------------------------------------------
+
+        elif strategy == "Momentum":
+
+            threshold = params["momentum_threshold"]
+
+            signal = (
+                d["Momentum60"] > threshold
+            ).astype(float)
+
+        # --------------------------------------------------------
+        # BREAKOUT
+        # --------------------------------------------------------
+
+        elif strategy == "Breakout":
+
+            lookback = params["breakout"]
+
+            rolling_high = (
+                d["High"].rolling(lookback).max().shift(1)
             )
 
-            nifty = yf.Ticker("^NSEI").history(period=q_period)
+            signal = (
+                d["Close"] > rolling_high
+            ).astype(float)
 
-            if not nifty.empty:
-                nifty = nifty.reindex(df.index).ffill()
+        return signal.fillna(0)
+
+
+    # ============================================================
+    # BACKTEST ENGINE
+    # ============================================================
+
+    def quant_backtest(
+        df,
+        signal,
+        capital,
+        fee_bps,
+        slippage_bps
+    ):
+
+        x = df.copy()
+
+        x["Signal"] = signal.astype(float)
+
+        # Execute next day
+        x["Position"] = (
+            x["Signal"]
+            .shift(1)
+            .fillna(0)
+        )
+
+        x["Market_Return"] = (
+            x["Close"]
+            .pct_change()
+            .fillna(0)
+        )
+
+        # Turnover
+        x["Turnover"] = (
+            x["Position"]
+            .diff()
+            .abs()
+            .fillna(
+                x["Position"].abs()
+            )
+        )
+
+        cost_rate = (
+            fee_bps + slippage_bps
+        ) / 10000
+
+        x["Transaction_Cost"] = (
+            x["Turnover"] * cost_rate
+        )
+
+        x["Strategy_Return"] = (
+            x["Position"]
+            * x["Market_Return"]
+            - x["Transaction_Cost"]
+        )
+
+        x["Equity"] = (
+            capital
+            * (
+                1 + x["Strategy_Return"]
+            ).cumprod()
+        )
+
+        x["BuyHold"] = (
+            capital
+            * (
+                1 + x["Market_Return"]
+            ).cumprod()
+        )
+
+        # Drawdown
+        x["Peak"] = x["Equity"].cummax()
+
+        x["Drawdown"] = (
+            x["Equity"] / x["Peak"] - 1
+        )
+
+        returns = (
+            x["Strategy_Return"]
+            .replace([np.inf, -np.inf], np.nan)
+            .dropna()
+        )
+
+        if len(returns) == 0:
+            return x, {}
+
+        total_return = (
+            x["Equity"].iloc[-1] /
+            capital - 1
+        )
+
+        days = max(
+            (x.index[-1] - x.index[0]).days,
+            1
+        )
+
+        years = days / 365.25
+
+        final_equity = x["Equity"].iloc[-1]
+
+        cagr = (
+            (final_equity / capital)
+            ** (1 / years) - 1
+            if years > 0
+            else 0
+        )
+
+        annual_vol = (
+            returns.std()
+            * np.sqrt(252)
+        )
+
+        sharpe = (
+            returns.mean()
+            / returns.std()
+            * np.sqrt(252)
+            if returns.std() != 0
+            else 0
+        )
+
+        downside = returns[
+            returns < 0
+        ].std()
+
+        sortino = (
+            returns.mean()
+            / downside
+            * np.sqrt(252)
+            if downside and not pd.isna(downside)
+            else 0
+        )
+
+        max_dd = abs(
+            x["Drawdown"].min()
+        )
+
+        calmar = (
+            cagr / max_dd
+            if max_dd > 0
+            else 0
+        )
+
+        # VaR
+        var95 = np.percentile(
+            returns,
+            5
+        )
+
+        tail = returns[
+            returns <= var95
+        ]
+
+        cvar95 = (
+            tail.mean()
+            if len(tail)
+            else var95
+        )
+
+        # Trades
+        trade_changes = (
+            x["Position"]
+            .diff()
+            .abs()
+        )
+
+        trades = int(
+            (trade_changes > 0).sum()
+        )
+
+        active_returns = returns[
+            x.loc[returns.index, "Position"] > 0
+        ]
+
+        winning_trades = (
+            active_returns > 0
+        ).sum()
+
+        losing_trades = (
+            active_returns < 0
+        ).sum()
+
+        win_rate = (
+            winning_trades /
+            len(active_returns)
+            if len(active_returns)
+            else 0
+        )
+
+        gross_profit = (
+            active_returns[
+                active_returns > 0
+            ].sum()
+        )
+
+        gross_loss = abs(
+            active_returns[
+                active_returns < 0
+            ].sum()
+        )
+
+        profit_factor = (
+            gross_profit /
+            gross_loss
+            if gross_loss > 0
+            else np.inf
+        )
+
+        expectancy = (
+            active_returns.mean()
+            if len(active_returns)
+            else 0
+        )
+
+        exposure = (
+            x["Position"] > 0
+        ).mean()
+
+        metrics = {
+
+            "Total Return": total_return,
+
+            "CAGR": cagr,
+
+            "Annual Volatility": annual_vol,
+
+            "Sharpe": sharpe,
+
+            "Sortino": sortino,
+
+            "Calmar": calmar,
+
+            "Max Drawdown": max_dd,
+
+            "VaR 95": var95,
+
+            "CVaR 95": cvar95,
+
+            "Trades": trades,
+
+            "Win Rate": win_rate,
+
+            "Profit Factor": profit_factor,
+
+            "Expectancy": expectancy,
+
+            "Exposure": exposure,
+
+            "Final Equity": final_equity
+        }
+
+        return x, metrics
+
+
+    # ============================================================
+    # STRATEGY LAB
+    # ============================================================
+
+    st.markdown("### 🧪 Strategy Builder")
+
+    s1, s2 = st.columns([1, 1])
+
+    with s1:
+
+        strategy = st.selectbox(
+            "Strategy",
+            [
+                "SMA Crossover",
+                "EMA Crossover",
+                "RSI Mean Reversion",
+                "Bollinger Mean Reversion",
+                "Momentum",
+                "Breakout"
+            ],
+            key="quant_v2_strategy"
+        )
+
+    with s2:
+
+        benchmark_name = st.selectbox(
+            "Benchmark",
+            [
+                "NIFTY 50",
+                "Buy & Hold"
+            ],
+            key="quant_v2_benchmark"
+        )
+
+
+    # ============================================================
+    # STRATEGY PARAMETERS
+    # ============================================================
+
+    params = {}
+
+    if strategy in [
+        "SMA Crossover",
+        "EMA Crossover"
+    ]:
+
+        p1, p2 = st.columns(2)
+
+        with p1:
+
+            params["fast"] = st.slider(
+                "Fast Period",
+                5,
+                100,
+                20,
+                key="quant_fast"
+            )
+
+        with p2:
+
+            params["slow"] = st.slider(
+                "Slow Period",
+                20,
+                300,
+                50,
+                key="quant_slow"
+            )
+
+        if params["fast"] >= params["slow"]:
+
+            st.warning(
+                "Fast period slow period se chhota hona chahiye."
+            )
+
+
+    elif strategy == "RSI Mean Reversion":
+
+        p1, p2 = st.columns(2)
+
+        with p1:
+
+            params["rsi_buy"] = st.slider(
+                "RSI Buy Level",
+                10,
+                50,
+                30,
+                key="quant_rsi_buy"
+            )
+
+        with p2:
+
+            params["rsi_exit"] = st.slider(
+                "RSI Exit Level",
+                40,
+                80,
+                55,
+                key="quant_rsi_exit"
+            )
+
+
+    elif strategy == "Momentum":
+
+        params["momentum_threshold"] = st.slider(
+            "60-Day Momentum Threshold",
+            -0.20,
+            0.50,
+            0.00,
+            step=0.01,
+            key="quant_momentum_threshold"
+        )
+
+
+    elif strategy == "Breakout":
+
+        params["breakout"] = st.slider(
+            "Breakout Lookback",
+            10,
+            100,
+            20,
+            key="quant_breakout"
+        )
+
+
+    fee_col, slip_col, run_col = st.columns(3)
+
+    with fee_col:
+
+        fee_bps = st.number_input(
+            "Brokerage + Fees (bps)",
+            min_value=0.0,
+            max_value=100.0,
+            value=5.0,
+            step=1.0,
+            key="quant_fee"
+        )
+
+    with slip_col:
+
+        slippage_bps = st.number_input(
+            "Slippage (bps)",
+            min_value=0.0,
+            max_value=100.0,
+            value=5.0,
+            step=1.0,
+            key="quant_slippage"
+        )
+
+    with run_col:
+
+        run_quant = st.button(
+            "🚀 Run Quant Research",
+            type="primary",
+            use_container_width=True,
+            key="quant_run_v2"
+        )
+
+
+    # ============================================================
+    # RUN BACKTEST
+    # ============================================================
+
+    if run_quant:
+
+        if (
+            strategy in
+            ["SMA Crossover", "EMA Crossover"]
+            and params["fast"] >= params["slow"]
+        ):
+
+            st.error(
+                "Fast period slow period se chhota hona chahiye."
+            )
+
+            st.stop()
+
+
+        with st.spinner(
+            "Downloading market data + running quantitative engine..."
+        ):
+
+            raw = quant_get_history(
+                q_yf_symbol,
+                q_period
+            )
+
+            nifty = quant_get_nifty(
+                q_period
+            )
+
+
+        if raw.empty:
+
+            st.error(
+                "❌ Historical data nahi mila. NSE symbol check karo."
+            )
+
+            st.stop()
+
+
+        if len(raw) < 100:
+
+            st.warning(
+                "⚠️ Data relatively short hai. "
+                "Longer period se research result more reliable hoga."
+            )
+
+
+        data = quant_features(raw)
+
+        signal = quant_signal(
+            data,
+            strategy,
+            params
+        )
+
+        bt, metrics = quant_backtest(
+            data,
+            signal,
+            q_capital,
+            fee_bps,
+            slippage_bps
+        )
+
+
+        # ========================================================
+        # NIFTY BENCHMARK
+        # ========================================================
+
+        nifty_return = 0
+
+        if not nifty.empty:
+
+            nifty_close = (
+                nifty["Close"]
+                .reindex(bt.index)
+                .ffill()
+                .dropna()
+            )
+
+            if len(nifty_close) > 1:
 
                 nifty_return = (
-                    nifty["Close"].dropna().iloc[-1] /
-                    nifty["Close"].dropna().iloc[0]
-                ) - 1
-            else:
-                nifty_return = 0
+                    nifty_close.iloc[-1] /
+                    nifty_close.iloc[0] - 1
+                )
 
-            sharpe = (
-                df["Strategy"].mean() / df["Strategy"].std() * (252 ** 0.5)
-                if df["Strategy"].std() != 0 else 0
+                bt["NIFTY"] = (
+                    q_capital
+                    * nifty_close /
+                    nifty_close.iloc[0]
+                )
+
+
+        # ========================================================
+        # TOP KPI CARDS
+        # ========================================================
+
+        st.markdown("### 📊 Performance Overview")
+
+        k1, k2, k3, k4, k5, k6 = st.columns(6)
+
+        k1.metric(
+            "Strategy Return",
+            f"{metrics['Total Return'] * 100:.2f}%"
+        )
+
+        k2.metric(
+            "CAGR",
+            f"{metrics['CAGR'] * 100:.2f}%"
+        )
+
+        k3.metric(
+            "Sharpe",
+            f"{metrics['Sharpe']:.2f}"
+        )
+
+        k4.metric(
+            "Max Drawdown",
+            f"-{metrics['Max Drawdown'] * 100:.2f}%"
+        )
+
+        k5.metric(
+            "Win Rate",
+            f"{metrics['Win Rate'] * 100:.1f}%"
+        )
+
+        k6.metric(
+            "Profit Factor",
+            (
+                f"{metrics['Profit Factor']:.2f}"
+                if np.isfinite(metrics["Profit Factor"])
+                else "∞"
             )
+        )
 
-            downside = df[df["Strategy"] < 0]["Strategy"].std()
 
-            sortino = (
-                df["Strategy"].mean() / downside * (252 ** 0.5)
-                if downside != 0 and not pd.isna(downside)
-                else 0
+        # ========================================================
+        # EQUITY CURVE
+        # ========================================================
+
+        st.markdown("### 📈 Equity Curve")
+
+        fig_equity = go.Figure()
+
+        fig_equity.add_trace(
+            go.Scatter(
+                x=bt.index,
+                y=bt["Equity"],
+                name="Strategy",
+                mode="lines"
             )
+        )
 
-            # Value at Risk (95%)
-            var_95 = np.percentile(df["Strategy"].dropna(), 5) * 100
-
-            # Conditional VaR (Expected Shortfall)
-            cvar_95 = (
-                df["Strategy"][df["Strategy"] <= np.percentile(df["Strategy"].dropna(), 5)]
-                .mean() * 100
+        fig_equity.add_trace(
+            go.Scatter(
+                x=bt.index,
+                y=bt["BuyHold"],
+                name="Buy & Hold",
+                mode="lines"
             )
+        )
 
-            c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12 = st.columns(12)
-            c1.metric(
-                "Strategy Return",
-                f"{total_return*100:.2f}%"
-            )
+        if "NIFTY" in bt.columns:
 
-            c2.metric(
-                "Buy & Hold",
-                f"{buy_hold*100:.2f}%"
-            )
-
-            c3.metric(
-                "Sharpe Ratio",
-                f"{sharpe:.2f}"
-            )
-
-            c4.metric(
-                "Win Rate",
-                f"{win_rate:.1f}%"
-            )
-
-            c5.metric(
-                "Trades",
-                total_trades
-            )
-
-            c6.metric(
-                "CAGR",
-                f"{cagr:.2f}%"
-            )
-
-            c7.metric(
-                "Sortino",
-                f"{sortino:.2f}"
-            )
-
-            c8.metric(
-                "Calmar",
-                f"{calmar:.2f}"
-            )
-
-            rolling_max = df["Close"].cummax()
-
-            drawdown = (
-                (df["Close"] - rolling_max)
-                / rolling_max
-            )
-
-            max_drawdown = abs(drawdown.min()) * 100
-
-            c9.metric(
-                "NIFTY50",
-                f"{nifty_return*100:.2f}%"
-            )
-
-            c10.metric(
-                "Max DD",
-                f"{max_drawdown:.2f}%"
-            )
-
-            c11.metric(
-                "VaR 95%",
-                f"{var_95:.2f}%"
-            )
-
-            c12.metric(
-                "CVaR 95%",
-                f"{cvar_95:.2f}%"
-            )
-
-            df["Equity Curve"] = (1 + df["Strategy"].fillna(0)).cumprod()
-            df["Buy Hold Curve"] = df["Close"] / df["Close"].iloc[0]
-
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(x=df.index, y=df["Equity Curve"], name="Strategy"))
-            fig.add_trace(go.Scatter(x=df.index, y=df["Buy Hold Curve"], name="Buy & Hold"))
-            if not nifty.empty:
-                    nifty["NIFTY Curve"] = nifty["Close"] / nifty["Close"].dropna().iloc[0]
-
-            fig.add_trace(
+            fig_equity.add_trace(
                 go.Scatter(
-                    x=df.index,
-                    y=nifty["NIFTY Curve"],
-                    name="NIFTY50"
+                    x=bt.index,
+                    y=bt["NIFTY"],
+                    name="NIFTY 50",
+                    mode="lines"
                 )
             )
-            fig.update_layout(template="plotly_dark", title="Backtest Equity Curve")
-            st.plotly_chart(fig, use_container_width="stretch")
 
-            st.dataframe(df[["Close", "SMA20", "SMA50", "Signal", "Return", "Strategy"]].tail(20))
-            st.divider()
-    st.markdown("### 🧮 Multi-Stock Quant Engine")
-    st.caption(
-        "Correlation, Beta/Alpha (CAPM), Regression trend, aur return distribution stats — "
-        "multiple stocks ko NIFTY ke against compare karne ke liye."
-    )
+        fig_equity.update_layout(
+            template="plotly_dark",
+            height=430,
+            title=(
+                f"{q_symbol.upper()} — "
+                f"{strategy}"
+            ),
+            yaxis_title="Portfolio Value (₹)",
+            xaxis_title="Date"
+        )
 
-    qt_stock_input = st.text_area(
-        "Stocks (comma separated)",
-        value="RELIANCE,TCS,HDFCBANK,INFY",
-        key="qt_stocks"
-    )
+        st.plotly_chart(
+            fig_equity,
+            use_container_width=True,
+            key="quant_equity_v2"
+        )
 
-    qt_period = st.selectbox(
-        "Period",
-        ["6mo", "1y", "2y", "5y"],
-        index=1,
-        key="qt_period"
-    )
 
-    if st.button("🔎 Run Quant Analysis", key="qt_run_btn"):
+        # ========================================================
+        # DRAWDOWN
+        # ========================================================
 
-        qt_symbols = [s.strip().upper() for s in qt_stock_input.split(",") if s.strip()]
+        st.markdown("### 📉 Drawdown")
 
-        if len(qt_symbols) < 2:
-            st.warning("⚠️ Kam se kam 2 stocks daalo (comma-separated).")
+        fig_dd = go.Figure()
+
+        fig_dd.add_trace(
+            go.Scatter(
+                x=bt.index,
+                y=bt["Drawdown"] * 100,
+                mode="lines",
+                fill="tozeroy",
+                name="Drawdown"
+            )
+        )
+
+        fig_dd.update_layout(
+            template="plotly_dark",
+            height=300,
+            yaxis_title="Drawdown (%)"
+        )
+
+        st.plotly_chart(
+            fig_dd,
+            use_container_width=True,
+            key="quant_drawdown_v2"
+        )
+
+
+        # ========================================================
+        # MONTHLY RETURNS
+        # ========================================================
+
+        st.markdown("### 🗓️ Monthly Returns")
+
+        monthly_returns = (
+            bt["Strategy_Return"]
+            .resample("ME")
+            .apply(
+                lambda x: (
+                    (1 + x).prod() - 1
+                )
+            )
+        )
+
+        monthly_df = monthly_returns.to_frame(
+            "Return"
+        )
+
+        monthly_df["Year"] = (
+            monthly_df.index.year
+        )
+
+        monthly_df["Month"] = (
+            monthly_df.index.month
+        )
+
+        monthly_pivot = monthly_df.pivot(
+            index="Year",
+            columns="Month",
+            values="Return"
+        )
+
+        monthly_pivot.columns = [
+            calendar.month_abbr[int(m)]
+            for m in monthly_pivot.columns
+        ]
+
+        st.dataframe(
+            (
+                monthly_pivot * 100
+            ).round(2),
+            use_container_width=True
+        )
+
+
+        # ========================================================
+        # ROLLING SHARPE
+        # ========================================================
+
+        st.markdown("### 📐 Rolling 6-Month Sharpe")
+
+        rolling_mean = (
+            bt["Strategy_Return"]
+            .rolling(126)
+            .mean()
+        )
+
+        rolling_std = (
+            bt["Strategy_Return"]
+            .rolling(126)
+            .std()
+        )
+
+        rolling_sharpe = (
+            rolling_mean /
+            rolling_std *
+            np.sqrt(252)
+        )
+
+        fig_rs = go.Figure()
+
+        fig_rs.add_trace(
+            go.Scatter(
+                x=bt.index,
+                y=rolling_sharpe,
+                mode="lines",
+                name="Rolling Sharpe"
+            )
+        )
+
+        fig_rs.add_hline(
+            y=1,
+            line_dash="dash",
+            annotation_text="Sharpe = 1"
+        )
+
+        fig_rs.update_layout(
+            template="plotly_dark",
+            height=300,
+            yaxis_title="Sharpe"
+        )
+
+        st.plotly_chart(
+            fig_rs,
+            use_container_width=True,
+            key="quant_rolling_sharpe"
+        )
+
+
+        # ========================================================
+        # RESEARCH METRICS
+        # ========================================================
+
+        st.markdown("### 🔬 Research Metrics")
+
+        research_df = pd.DataFrame(
+            [
+                [
+                    "Total Return",
+                    metrics["Total Return"] * 100,
+                    "%"
+                ],
+                [
+                    "CAGR",
+                    metrics["CAGR"] * 100,
+                    "%"
+                ],
+                [
+                    "Annual Volatility",
+                    metrics["Annual Volatility"] * 100,
+                    "%"
+                ],
+                [
+                    "Sharpe Ratio",
+                    metrics["Sharpe"],
+                    ""
+                ],
+                [
+                    "Sortino Ratio",
+                    metrics["Sortino"],
+                    ""
+                ],
+                [
+                    "Calmar Ratio",
+                    metrics["Calmar"],
+                    ""
+                ],
+                [
+                    "Maximum Drawdown",
+                    metrics["Max Drawdown"] * 100,
+                    "%"
+                ],
+                [
+                    "VaR 95%",
+                    metrics["VaR 95"] * 100,
+                    "%"
+                ],
+                [
+                    "CVaR 95%",
+                    metrics["CVaR 95"] * 100,
+                    "%"
+                ],
+                [
+                    "Trades",
+                    metrics["Trades"],
+                    ""
+                ],
+                [
+                    "Win Rate",
+                    metrics["Win Rate"] * 100,
+                    "%"
+                ],
+                [
+                    "Profit Factor",
+                    metrics["Profit Factor"],
+                    ""
+                ],
+                [
+                    "Expectancy / Day",
+                    metrics["Expectancy"] * 100,
+                    "%"
+                ],
+                [
+                    "Market Exposure",
+                    metrics["Exposure"] * 100,
+                    "%"
+                ],
+                [
+                    "Final Equity",
+                    metrics["Final Equity"],
+                    "₹"
+                ]
+            ],
+            columns=[
+                "Metric",
+                "Value",
+                "Unit"
+            ]
+        )
+
+        st.dataframe(
+            research_df.round(3),
+            use_container_width=True,
+            hide_index=True
+        )
+
+
+        # ========================================================
+        # QUANT INTERPRETATION
+        # ========================================================
+
+        st.markdown("### 🧠 Quant Interpretation")
+
+        sharpe = metrics["Sharpe"]
+        max_dd = metrics["Max Drawdown"]
+
+        if sharpe >= 2:
+
+            st.success(
+                "🟢 Excellent historical risk-adjusted performance. "
+                "Sharpe 2+ is strong, but overfitting must still be checked."
+            )
+
+        elif sharpe >= 1:
+
+            st.info(
+                "🟡 Reasonable historical risk-adjusted performance. "
+                "Further out-of-sample testing recommended."
+            )
+
         else:
-            with st.spinner("Data fetch ho raha hai..."):
 
-                qt_prices = pd.DataFrame()
+            st.warning(
+                "🔴 Weak historical risk-adjusted performance. "
+                "Strategy may not have enough edge in this sample."
+            )
 
-                for qt_s in qt_symbols:
-                    qt_yf_sym = qt_s if qt_s.endswith(".NS") else qt_s + ".NS"
-                    try:
-                        qt_hist = yf.Ticker(qt_yf_sym).history(period=qt_period)
-                        if not qt_hist.empty:
-                            qt_prices[qt_s] = qt_hist["Close"]
-                    except Exception:
+
+        if max_dd > 0.30:
+
+            st.warning(
+                "⚠️ Maximum drawdown 30%+ hai. "
+                "Capital aur psychology dono ke liye high-risk."
+            )
+
+        elif max_dd > 0.20:
+
+            st.info(
+                "🟠 Drawdown 20%+ hai. Position sizing important rahegi."
+            )
+
+
+        if metrics["Exposure"] < 0.30:
+
+            st.info(
+                "ℹ️ Strategy ka market exposure low hai. "
+                "Low exposure ke wajah se absolute return naturally lower ho sakta hai."
+            )
+
+
+        # ========================================================
+        # STRATEGY COMPARISON
+        # ========================================================
+
+        st.markdown("### 🏆 Strategy Comparison")
+
+        comparison_strategies = [
+            "SMA Crossover",
+            "EMA Crossover",
+            "RSI Mean Reversion",
+            "Bollinger Mean Reversion",
+            "Momentum",
+            "Breakout"
+        ]
+
+        comparison_rows = []
+
+        comparison_params = {
+
+            "SMA Crossover": {
+                "fast": 20,
+                "slow": 50
+            },
+
+            "EMA Crossover": {
+                "fast": 20,
+                "slow": 50
+            },
+
+            "RSI Mean Reversion": {
+                "rsi_buy": 30,
+                "rsi_exit": 55
+            },
+
+            "Bollinger Mean Reversion": {},
+
+            "Momentum": {
+                "momentum_threshold": 0
+            },
+
+            "Breakout": {
+                "breakout": 20
+            }
+        }
+
+
+        comparison_progress = st.progress(0)
+
+        for i, strat in enumerate(
+            comparison_strategies
+        ):
+
+            sig = quant_signal(
+                data,
+                strat,
+                comparison_params[strat]
+            )
+
+            _, mm = quant_backtest(
+                data,
+                sig,
+                q_capital,
+                fee_bps,
+                slippage_bps
+            )
+
+            if mm:
+
+                comparison_rows.append(
+                    {
+                        "Strategy": strat,
+
+                        "Return %":
+                            mm["Total Return"] * 100,
+
+                        "CAGR %":
+                            mm["CAGR"] * 100,
+
+                        "Sharpe":
+                            mm["Sharpe"],
+
+                        "Sortino":
+                            mm["Sortino"],
+
+                        "Max DD %":
+                            mm["Max Drawdown"] * 100,
+
+                        "Win Rate %":
+                            mm["Win Rate"] * 100,
+
+                        "Profit Factor":
+                            mm["Profit Factor"],
+
+                        "Trades":
+                            mm["Trades"]
+                    }
+                )
+
+            comparison_progress.progress(
+                (i + 1) /
+                len(comparison_strategies)
+            )
+
+        comparison_progress.empty()
+
+        if comparison_rows:
+
+            comparison_df = pd.DataFrame(
+                comparison_rows
+            )
+
+            st.dataframe(
+                comparison_df.round(3),
+                use_container_width=True,
+                hide_index=True
+            )
+
+
+            # Best strategy
+            best_row = comparison_df.loc[
+                comparison_df["Sharpe"].idxmax()
+            ]
+
+            st.success(
+                f"🏆 Best historical Sharpe: "
+                f"{best_row['Strategy']} "
+                f"({best_row['Sharpe']:.2f})"
+            )
+
+
+        # ========================================================
+        # RECENT SIGNALS
+        # ========================================================
+
+        st.markdown("### 🔎 Recent Quant Signals")
+
+        signal_columns = [
+
+            "Close",
+
+            "SMA20",
+            "SMA50",
+            "SMA200",
+
+            "EMA20",
+            "EMA50",
+
+            "RSI",
+
+            "BB_Upper",
+            "BB_Lower",
+
+            "Momentum20",
+            "Momentum60",
+
+            "Volatility20",
+
+            "ZScore",
+
+            "ATR14",
+
+            "Signal",
+            "Position",
+
+            "Strategy_Return"
+        ]
+
+        signal_columns = [
+            c for c in signal_columns
+            if c in bt.columns
+        ]
+
+        st.dataframe(
+            bt[
+                signal_columns
+            ].tail(30).round(4),
+            use_container_width=True
+        )
+
+
+        # ========================================================
+        # DOWNLOAD
+        # ========================================================
+
+        st.download_button(
+            "📥 Download Full Backtest CSV",
+
+            bt.to_csv().encode(
+                "utf-8"
+            ),
+
+            file_name=(
+                f"{q_symbol.upper()}_"
+                f"{strategy.replace(' ', '_')}_"
+                f"quant_backtest.csv"
+            ),
+
+            mime="text/csv",
+
+            key="quant_download_v2"
+        )
+
+
+    # ============================================================
+    # FACTOR LAB
+    # ============================================================
+
+    st.divider()
+
+    st.markdown("## 🧬 Factor Lab")
+
+    st.caption(
+        "Multiple stocks ko NIFTY ke against compare karo — "
+        "Momentum, Volatility, Beta, Alpha, R² and correlation."
+    )
+
+    f1, f2 = st.columns([2, 1])
+
+    with f1:
+
+        factor_input = st.text_area(
+            "Stocks",
+            value=(
+                "RELIANCE,TCS,"
+                "HDFCBANK,INFY,"
+                "SBIN,ITC"
+            ),
+            key="quant_factor_input"
+        )
+
+    with f2:
+
+        factor_period = st.selectbox(
+            "Factor Period",
+            ["6mo", "1y", "2y", "5y"],
+            index=1,
+            key="quant_factor_period"
+        )
+
+
+    run_factor = st.button(
+        "🔬 Run Factor Analysis",
+        type="secondary",
+        key="quant_factor_run_v2"
+    )
+
+
+    if run_factor:
+
+        symbols = [
+            x.strip().upper()
+            for x in factor_input.split(",")
+            if x.strip()
+        ]
+
+        if len(symbols) < 2:
+
+            st.warning(
+                "At least 2 stocks required."
+            )
+
+        else:
+
+            factor_prices = pd.DataFrame()
+
+            progress = st.progress(0)
+
+            for i, sym in enumerate(symbols):
+
+                yf_sym = (
+                    sym
+                    if sym.endswith(".NS")
+                    else sym + ".NS"
+                )
+
+                h = quant_get_history(
+                    yf_sym,
+                    factor_period
+                )
+
+                if not h.empty:
+
+                    factor_prices[sym] = (
+                        h["Close"]
+                    )
+
+                progress.progress(
+                    (i + 1) / len(symbols)
+                )
+
+            progress.empty()
+
+            nifty_factor = quant_get_nifty(
+                factor_period
+            )
+
+            if not nifty_factor.empty:
+
+                factor_prices["NIFTY"] = (
+                    nifty_factor["Close"]
+                )
+
+
+            factor_prices = (
+                factor_prices
+                .dropna()
+            )
+
+
+            if (
+                "NIFTY" not in
+                factor_prices.columns
+                or len(factor_prices) < 30
+            ):
+
+                st.error(
+                    "❌ Stock/NIFTY overlapping data insufficient."
+                )
+
+            else:
+
+                factor_returns = (
+                    factor_prices
+                    .pct_change()
+                    .dropna()
+                )
+
+                factor_rows = []
+
+                for sym in symbols:
+
+                    if sym not in factor_returns:
                         continue
 
-                try:
-                    qt_nifty_hist = yf.Ticker("^NSEI").history(period=qt_period)
-                    if not qt_nifty_hist.empty:
-                        qt_prices["NIFTY"] = qt_nifty_hist["Close"]
-                except Exception:
-                    pass
+                    y = factor_returns[sym]
 
-                qt_prices = qt_prices.dropna()
+                    x = factor_returns["NIFTY"]
 
-            if "NIFTY" not in qt_prices.columns or qt_prices.shape[1] < 3:
-                st.error("❌ Sufficient overlapping data nahi mila (NIFTY ya stocks ka data missing/mismatched dates).")
+                    beta = (
+                        y.cov(x) /
+                        x.var()
+                        if x.var()
+                        else 0
+                    )
+
+                    alpha_daily = (
+                        y.mean() -
+                        beta * x.mean()
+                    )
+
+                    expected = (
+                        alpha_daily +
+                        beta * x
+                    )
+
+                    residual = (
+                        y - expected
+                    )
+
+                    ss_res = (
+                        residual ** 2
+                    ).sum()
+
+                    ss_tot = (
+                        (y - y.mean()) ** 2
+                    ).sum()
+
+                    r2 = (
+                        1 -
+                        ss_res / ss_tot
+                        if ss_tot
+                        else 0
+                    )
+
+                    momentum60 = (
+                        factor_prices[sym]
+                        .pct_change(60)
+                        .iloc[-1]
+                        if len(
+                            factor_prices[sym]
+                        ) > 60
+                        else np.nan
+                    )
+
+                    volatility = (
+                        y.std()
+                        * np.sqrt(252)
+                    )
+
+                    total_return = (
+                        factor_prices[sym].iloc[-1]
+                        /
+                        factor_prices[sym].iloc[0]
+                        - 1
+                    )
+
+                    positive_days = (
+                        y > 0
+                    ).mean()
+
+                    trend = np.polyfit(
+                        np.arange(
+                            len(
+                                factor_prices[sym]
+                            )
+                        ),
+                        factor_prices[sym].values,
+                        1
+                    )[0]
+
+                    factor_rows.append(
+                        {
+                            "Stock": sym,
+
+                            "Return %":
+                                total_return * 100,
+
+                            "Momentum 60D %":
+                                momentum60 * 100,
+
+                            "Volatility %":
+                                volatility * 100,
+
+                            "Beta":
+                                beta,
+
+                            "Alpha %":
+                                alpha_daily
+                                * 252
+                                * 100,
+
+                            "R² vs NIFTY":
+                                r2,
+
+                            "Positive Days %":
+                                positive_days * 100,
+
+                            "Trend Slope":
+                                trend
+                        }
+                    )
+
+
+                factor_df = pd.DataFrame(
+                    factor_rows
+                )
+
+
+                # ====================================================
+                # FACTOR TABLE
+                # ====================================================
+
+                st.markdown(
+                    "### 📊 Factor Scorecard"
+                )
+
+                st.dataframe(
+                    factor_df.round(3),
+                    use_container_width=True,
+                    hide_index=True
+                )
+
+
+                # ====================================================
+                # CORRELATION
+                # ====================================================
+
+                st.markdown(
+                    "### 🔗 Correlation Matrix"
+                )
+
+                fig_corr = px.imshow(
+                    factor_returns.corr(),
+                    text_auto=".2f",
+                    zmin=-1,
+                    zmax=1,
+                    color_continuous_scale="RdBu",
+                    title="Daily Return Correlation"
+                )
+
+                st.plotly_chart(
+                    fig_corr,
+                    use_container_width=True,
+                    key="quant_factor_corr_v2"
+                )
+
+
+                # ====================================================
+                # RISK VS RETURN
+                # ====================================================
+
+                st.markdown(
+                    "### ⚖️ Risk vs Return"
+                )
+
+                fig_risk = px.scatter(
+                    factor_df,
+                    x="Volatility %",
+                    y="Return %",
+                    text="Stock",
+                    size="Beta",
+                    title="Return vs Annualized Volatility"
+                )
+
+                fig_risk.update_traces(
+                    textposition="top center"
+                )
+
+                fig_risk.update_layout(
+                    template="plotly_dark",
+                    height=400
+                )
+
+                st.plotly_chart(
+                    fig_risk,
+                    use_container_width=True,
+                    key="quant_factor_risk_v2"
+                )
+
+
+                # ====================================================
+                # HIGH CORRELATION WARNING
+                # ====================================================
+
+                corr_matrix = (
+                    factor_returns[
+                        [
+                            s for s in symbols
+                            if s in factor_returns.columns
+                        ]
+                    ]
+                    .corr()
+                )
+
+                high_corr = []
+
+                available_symbols = list(
+                    corr_matrix.columns
+                )
+
+                for i in range(
+                    len(available_symbols)
+                ):
+
+                    for j in range(
+                        i + 1,
+                        len(available_symbols)
+                    ):
+
+                        a = available_symbols[i]
+                        b = available_symbols[j]
+
+                        corr_value = (
+                            corr_matrix
+                            .loc[a, b]
+                        )
+
+                        if abs(
+                            corr_value
+                        ) >= 0.80:
+
+                            high_corr.append(
+                                f"{a} — {b} "
+                                f"({corr_value:.2f})"
+                            )
+
+
+                if high_corr:
+
+                    st.warning(
+                        "⚠️ High-correlation pairs: "
+                        + ", ".join(high_corr)
+                    )
+
+                else:
+
+                    st.success(
+                        "✅ No pair above ±0.80 "
+                        "correlation."
+                    )
+
+
+                # ====================================================
+                # FACTOR INSIGHTS
+                # ====================================================
+
+                st.markdown(
+                    "### 🧠 Factor Insights"
+                )
+
+                if not factor_df.empty:
+
+                    best_return = factor_df.loc[
+                        factor_df["Return %"].idxmax()
+                    ]
+
+                    lowest_vol = factor_df.loc[
+                        factor_df["Volatility %"].idxmin()
+                    ]
+
+                    lowest_beta = factor_df.loc[
+                        factor_df["Beta"].idxmin()
+                    ]
+
+                    highest_momentum = factor_df.loc[
+                        factor_df["Momentum 60D %"].idxmax()
+                    ]
+
+
+                    st.write(
+                        f"🏆 **Highest Return:** "
+                        f"{best_return['Stock']} "
+                        f"({best_return['Return %']:.2f}%)"
+                    )
+
+                    st.write(
+                        f"🛡️ **Lowest Volatility:** "
+                        f"{lowest_vol['Stock']} "
+                        f"({lowest_vol['Volatility %']:.2f}%)"
+                    )
+
+                    st.write(
+                        f"📉 **Lowest Beta:** "
+                        f"{lowest_beta['Stock']} "
+                        f"({lowest_beta['Beta']:.2f})"
+                    )
+
+                    st.write(
+                        f"🚀 **Strongest 60D Momentum:** "
+                        f"{highest_momentum['Stock']} "
+                        f"({highest_momentum['Momentum 60D %']:.2f}%)"
+                    )
+
+
+# ============================================================
+    # QUANT V3 — RESEARCH ENGINE
+    # Walk-Forward + Optimization + Monte Carlo + Regime Detection
+    # ============================================================
+
+    st.divider()
+
+    st.markdown("## 🔬 Quant Research Engine")
+    st.caption(
+        "Advanced strategy validation: parameter optimization, "
+        "walk-forward testing, Monte Carlo simulation and market-regime analysis."
+    )
+
+    # ============================================================
+    # RESEARCH CONTROLS
+    # ============================================================
+
+    r1, r2, r3 = st.columns(3)
+
+    with r1:
+        research_strategy = st.selectbox(
+            "Research Strategy",
+            [
+                "SMA Crossover",
+                "EMA Crossover",
+                "RSI Mean Reversion",
+                "Momentum",
+                "Breakout"
+            ],
+            key="quant_v3_research_strategy"
+        )
+
+    with r2:
+        research_capital = st.number_input(
+            "Research Capital (₹)",
+            min_value=10000.0,
+            value=100000.0,
+            step=10000.0,
+            key="quant_v3_capital"
+        )
+
+    with r3:
+        mc_simulations = st.selectbox(
+            "Monte Carlo Simulations",
+            [500, 1000, 2000, 5000],
+            index=1,
+            key="quant_v3_mc"
+        )
+
+    run_research = st.button(
+        "🧠 Run Advanced Quant Research",
+        type="primary",
+        use_container_width=True,
+        key="quant_v3_run"
+    )
+
+    if run_research:
+
+        # ========================================================
+        # DOWNLOAD DATA
+        # ========================================================
+
+        with st.spinner(
+            "Running research engine..."
+        ):
+
+            research_raw = quant_get_history(
+                q_yf_symbol,
+                q_period
+            )
+
+        if research_raw.empty:
+
+            st.error(
+                "❌ Historical data nahi mila."
+            )
+
+            st.stop()
+
+        research_data = quant_features(
+            research_raw
+        )
+
+        # ========================================================
+        # PARAMETER OPTIMIZATION
+        # ========================================================
+
+        st.markdown("### ⚙️ Parameter Optimization")
+
+        st.caption(
+            "Different parameter combinations ko test karke "
+            "historical Sharpe aur return compare kiye ja rahe hain."
+        )
+
+        optimization_rows = []
+
+        progress = st.progress(0)
+
+        if research_strategy in [
+            "SMA Crossover",
+            "EMA Crossover"
+        ]:
+
+            fast_values = [
+                5, 10, 15, 20, 25, 30, 40, 50
+            ]
+
+            slow_values = [
+                50, 75, 100, 125, 150, 200
+            ]
+
+            combinations = [
+                (f, s)
+                for f in fast_values
+                for s in slow_values
+                if f < s
+            ]
+
+            for i, (fast, slow) in enumerate(
+                combinations
+            ):
+
+                params_opt = {
+                    "fast": fast,
+                    "slow": slow
+                }
+
+                sig = quant_signal(
+                    research_data,
+                    research_strategy,
+                    params_opt
+                )
+
+                _, mm = quant_backtest(
+                    research_data,
+                    sig,
+                    research_capital,
+                    5,
+                    5
+                )
+
+                if mm:
+
+                    optimization_rows.append(
+                        {
+                            "Fast": fast,
+                            "Slow": slow,
+                            "Return %":
+                                mm["Total Return"] * 100,
+                            "CAGR %":
+                                mm["CAGR"] * 100,
+                            "Sharpe":
+                                mm["Sharpe"],
+                            "Sortino":
+                                mm["Sortino"],
+                            "Max DD %":
+                                mm["Max Drawdown"] * 100,
+                            "Win Rate %":
+                                mm["Win Rate"] * 100,
+                            "Trades":
+                                mm["Trades"]
+                        }
+                    )
+
+                progress.progress(
+                    (i + 1) /
+                    len(combinations)
+                )
+
+        elif research_strategy == "RSI Mean Reversion":
+
+            rsi_buy_values = [
+                20, 25, 30, 35, 40
+            ]
+
+            rsi_exit_values = [
+                50, 55, 60, 65, 70
+            ]
+
+            combinations = [
+                (b, e)
+                for b in rsi_buy_values
+                for e in rsi_exit_values
+                if b < e
+            ]
+
+            for i, (buy, exit_level) in enumerate(
+                combinations
+            ):
+
+                params_opt = {
+                    "rsi_buy": buy,
+                    "rsi_exit": exit_level
+                }
+
+                sig = quant_signal(
+                    research_data,
+                    research_strategy,
+                    params_opt
+                )
+
+                _, mm = quant_backtest(
+                    research_data,
+                    sig,
+                    research_capital,
+                    5,
+                    5
+                )
+
+                if mm:
+
+                    optimization_rows.append(
+                        {
+                            "RSI Buy": buy,
+                            "RSI Exit": exit_level,
+                            "Return %":
+                                mm["Total Return"] * 100,
+                            "CAGR %":
+                                mm["CAGR"] * 100,
+                            "Sharpe":
+                                mm["Sharpe"],
+                            "Sortino":
+                                mm["Sortino"],
+                            "Max DD %":
+                                mm["Max Drawdown"] * 100,
+                            "Win Rate %":
+                                mm["Win Rate"] * 100,
+                            "Trades":
+                                mm["Trades"]
+                        }
+                    )
+
+                progress.progress(
+                    (i + 1) /
+                    len(combinations)
+                )
+
+        elif research_strategy == "Momentum":
+
+            thresholds = [
+                -0.20,
+                -0.15,
+                -0.10,
+                -0.05,
+                0.00,
+                0.05,
+                0.10,
+                0.15,
+                0.20,
+                0.30
+            ]
+
+            for i, threshold in enumerate(
+                thresholds
+            ):
+
+                params_opt = {
+                    "momentum_threshold":
+                        threshold
+                }
+
+                sig = quant_signal(
+                    research_data,
+                    research_strategy,
+                    params_opt
+                )
+
+                _, mm = quant_backtest(
+                    research_data,
+                    sig,
+                    research_capital,
+                    5,
+                    5
+                )
+
+                if mm:
+
+                    optimization_rows.append(
+                        {
+                            "Threshold":
+                                threshold,
+                            "Return %":
+                                mm["Total Return"] * 100,
+                            "CAGR %":
+                                mm["CAGR"] * 100,
+                            "Sharpe":
+                                mm["Sharpe"],
+                            "Sortino":
+                                mm["Sortino"],
+                            "Max DD %":
+                                mm["Max Drawdown"] * 100,
+                            "Win Rate %":
+                                mm["Win Rate"] * 100,
+                            "Trades":
+                                mm["Trades"]
+                        }
+                    )
+
+                progress.progress(
+                    (i + 1) /
+                    len(thresholds)
+                )
+
+        elif research_strategy == "Breakout":
+
+            breakout_values = [
+                10, 15, 20, 30, 40,
+                50, 60, 75, 100
+            ]
+
+            for i, breakout in enumerate(
+                breakout_values
+            ):
+
+                params_opt = {
+                    "breakout":
+                        breakout
+                }
+
+                sig = quant_signal(
+                    research_data,
+                    research_strategy,
+                    params_opt
+                )
+
+                _, mm = quant_backtest(
+                    research_data,
+                    sig,
+                    research_capital,
+                    5,
+                    5
+                )
+
+                if mm:
+
+                    optimization_rows.append(
+                        {
+                            "Breakout":
+                                breakout,
+                            "Return %":
+                                mm["Total Return"] * 100,
+                            "CAGR %":
+                                mm["CAGR"] * 100,
+                            "Sharpe":
+                                mm["Sharpe"],
+                            "Sortino":
+                                mm["Sortino"],
+                            "Max DD %":
+                                mm["Max Drawdown"] * 100,
+                            "Win Rate %":
+                                mm["Win Rate"] * 100,
+                            "Trades":
+                                mm["Trades"]
+                        }
+                    )
+
+                progress.progress(
+                    (i + 1) /
+                    len(breakout_values)
+                )
+
+        progress.empty()
+
+        # ========================================================
+        # OPTIMIZATION RESULTS
+        # ========================================================
+
+        if optimization_rows:
+
+            optimization_df = pd.DataFrame(
+                optimization_rows
+            )
+
+            optimization_df = (
+                optimization_df
+                .sort_values(
+                    "Sharpe",
+                    ascending=False
+                )
+            )
+
+            st.dataframe(
+                optimization_df.head(15).round(3),
+                use_container_width=True,
+                hide_index=True
+            )
+
+            best = optimization_df.iloc[0]
+
+            st.success(
+                f"🏆 Best historical parameter set — "
+                f"Sharpe: {best['Sharpe']:.2f} | "
+                f"CAGR: {best['CAGR %']:.2f}% | "
+                f"Max DD: {best['Max DD %']:.2f}%"
+            )
+
+        # ========================================================
+        # WALK-FORWARD TEST
+        # ========================================================
+
+        st.markdown(
+            "### 🔄 Walk-Forward Validation"
+        )
+
+        st.caption(
+            "Historical data ko sequential train/test windows "
+            "me divide karke out-of-sample performance estimate ki ja rahi hai."
+        )
+
+        wf_data = research_data.copy()
+
+        total_rows = len(wf_data)
+
+        if total_rows >= 500:
+
+            train_size = int(
+                total_rows * 0.60
+            )
+
+            test_size = int(
+                total_rows * 0.20
+            )
+
+            wf_results = []
+
+            start = 0
+
+            while (
+                start +
+                train_size +
+                test_size
+                <= total_rows
+            ):
+
+                train = wf_data.iloc[
+                    start:
+                    start + train_size
+                ]
+
+                test = wf_data.iloc[
+                    start + train_size:
+                    start + train_size + test_size
+                ]
+
+                                # ====================================================
+                # TRAIN-ONLY PARAMETER SELECTION
+                # Select parameters using training data only.
+                # Evaluate the selected parameters on the next test window.
+                # ====================================================
+
+                if research_strategy in [
+                    "SMA Crossover",
+                    "EMA Crossover"
+                ]:
+
+                    candidates = [
+                        {
+                            "fast": fast,
+                            "slow": slow
+                        }
+                        for fast in [5, 10, 15, 20, 25, 30, 40, 50]
+                        for slow in [50, 75, 100, 125, 150, 200]
+                        if fast < slow
+                    ]
+
+                elif research_strategy == "RSI Mean Reversion":
+
+                    candidates = [
+                        {
+                            "rsi_buy": buy,
+                            "rsi_exit": exit_level
+                        }
+                        for buy in [20, 25, 30, 35, 40]
+                        for exit_level in [50, 55, 60, 65, 70]
+                        if buy < exit_level
+                    ]
+
+                elif research_strategy == "Momentum":
+
+                    candidates = [
+                        {
+                            "momentum_threshold": threshold
+                        }
+                        for threshold in [
+                            -0.20, -0.10, 0.00, 0.05,
+                            0.10, 0.20, 0.30, 0.50
+                        ]
+                    ]
+
+                elif research_strategy == "Breakout":
+
+                    candidates = [
+                        {
+                            "breakout": lookback
+                        }
+                        for lookback in [
+                            10, 15, 20, 30, 40,
+                            50, 60, 75, 100
+                        ]
+                    ]
+
+                else:
+
+                    candidates = []
+
+                # Choose the best eligible candidate on TRAIN data.
+                best_params = None
+                best_train_sharpe = -np.inf
+
+                for candidate in candidates:
+
+                    train_signal = quant_signal(
+                        train,
+                        research_strategy,
+                        candidate
+                    )
+
+                    _, train_metrics = quant_backtest(
+                        train,
+                        train_signal,
+                        research_capital,
+                        fee_bps,
+                        slippage_bps
+                    )
+
+                    if not train_metrics:
+                        continue
+
+                    try:
+
+                        candidate_sharpe = float(
+                            train_metrics.get("Sharpe", np.nan)
+                        )
+
+                        candidate_trades = int(
+                            train_metrics.get("Trades", 0)
+                        )
+
+                    except (TypeError, ValueError):
+
+                        continue
+
+                    # Avoid selecting a candidate with too little trading activity.
+                    if candidate_trades < 2:
+                        continue
+
+                    if not np.isfinite(candidate_sharpe):
+                        continue
+
+                    if candidate_sharpe > best_train_sharpe:
+
+                        best_train_sharpe = candidate_sharpe
+                        best_params = candidate.copy()
+
+                # Do not silently fall back to arbitrary fixed parameters.
+                if best_params is None:
+
+                    st.warning(
+                        f"Walk-forward window {len(wf_results) + 1}: "
+                        "no eligible parameter set was found in training data."
+                    )
+
+                    start += test_size
+                    continue
+
+                params_wf = best_params
+
+                test_signal = quant_signal(
+                    test,
+                    research_strategy,
+                    params_wf
+                )
+
+                _, test_metrics = quant_backtest(
+                    test,
+                    test_signal,
+                    research_capital,
+                _, test_metrics = quant_backtest(
+                    test,
+                    test_signal,
+                    research_capital,
+                    fee_bps,
+                    slippage_bps
+                )
+                )
+
+                if test_metrics:
+
+                    wf_results.append(
+                        {
+                            "Test Window": len(wf_results) + 1,
+                            "Selected Parameters": str(params_wf),
+                            "Training Sharpe": round(best_train_sharpe, 3),
+
+                            "OOS Return %": test_metrics["Total Return"] * 100,
+
+                            "OOS CAGR %": test_metrics["CAGR"] * 100,
+
+                            "OOS Sharpe": test_metrics["Sharpe"],
+
+                            "OOS Max DD %":test_metrics["Max Drawdown"] * 100
+                        }
+                    )
+
+                start += test_size
+
+            if wf_results:
+
+                wf_df = pd.DataFrame(
+                    wf_results
+                )
+
+                st.dataframe(
+                    wf_df.round(3),
+                    use_container_width=True,
+                    hide_index=True
+                )
+
+                oos_sharpe = (
+                    wf_df["OOS Sharpe"]
+                    .mean()
+                )
+
+                oos_return = (
+                    wf_df["OOS Return %"]
+                    .mean()
+                )
+
+                st.metric(
+                    "Average Out-of-Sample Sharpe",
+                    f"{oos_sharpe:.2f}"
+                )
+
+                if oos_sharpe > 1:
+
+                    st.success(
+                        "🟢 Strategy ne OOS testing me "
+                        "reasonable robustness dikhayi."
+                    )
+
+                elif oos_sharpe > 0:
+
+                    st.warning(
+                        "🟡 OOS performance positive hai, "
+                        "lekin edge weak hai."
+                    )
+
+                else:
+
+                    st.error(
+                        "🔴 OOS Sharpe negative hai. "
+                        "Historical in-sample performance "
+                        "potentially overfit ho sakti hai."
+                    )
+
+        else:
+
+            st.info(
+                "Walk-forward ke liye longer historical "
+                "period recommended hai."
+            )
+
+        # ========================================================
+        # MONTE CARLO
+        # ========================================================
+
+        st.markdown(
+            "### 🎲 Monte Carlo Strategy Validation"
+        )
+
+        st.caption(
+            "Historical trade/return distribution ko randomize "
+            "karke possible future outcome ranges estimate kiye ja rahe hain."
+        )
+
+        # Use robust baseline strategy
+
+        if research_strategy in [
+            "SMA Crossover",
+            "EMA Crossover"
+        ]:
+
+            mc_params = {
+                "fast": 20,
+                "slow": 50
+            }
+
+        elif research_strategy == "RSI Mean Reversion":
+
+            mc_params = {
+                "rsi_buy": 30,
+                "rsi_exit": 55
+            }
+
+        elif research_strategy == "Momentum":
+
+            mc_params = {
+                "momentum_threshold": 0
+            }
+
+        else:
+
+            mc_params = {
+                "breakout": 20
+            }
+
+        mc_signal = quant_signal(
+            research_data,
+            research_strategy,
+            mc_params
+        )
+
+        mc_bt, mc_metrics = quant_backtest(
+            research_data,
+            mc_signal,
+            research_capital,
+            5,
+            5
+        )
+
+        mc_returns = (
+            mc_bt["Strategy_Return"]
+            .replace(
+                [np.inf, -np.inf],
+                np.nan
+            )
+            .dropna()
+        )
+
+        mc_returns = mc_returns[
+            mc_returns != 0
+        ]
+
+        if len(mc_returns) > 20:
+
+            rng = np.random.default_rng(42)
+
+            simulation_days = min(
+                252,
+                len(mc_returns)
+            )
+
+            simulation_matrix = rng.choice(
+                mc_returns.values,
+                size=(
+                    int(mc_simulations),
+                    simulation_days
+                ),
+                replace=True
+            )
+
+            simulated_equity = (
+                research_capital
+                * np.cumprod(
+                    1 + simulation_matrix,
+                    axis=1
+                )
+            )
+
+            final_values = (
+                simulated_equity[:, -1]
+            )
+
+            simulated_returns = (
+                final_values /
+                research_capital - 1
+            )
+
+            simulated_max_dd = []
+
+            for path in simulated_equity:
+
+                peak = np.maximum.accumulate(
+                    path
+                )
+
+                dd = (
+                    path / peak - 1
+                )
+
+                simulated_max_dd.append(
+                    abs(dd.min())
+                )
+
+            simulated_max_dd = np.array(
+                simulated_max_dd
+            )
+
+            mc_c1, mc_c2, mc_c3, mc_c4 = st.columns(4)
+
+            mc_c1.metric(
+                "Median Final Capital",
+                f"₹{np.median(final_values):,.0f}"
+            )
+
+            mc_c2.metric(
+                "5% Worst Capital",
+                f"₹{np.percentile(final_values, 5):,.0f}"
+            )
+
+            mc_c3.metric(
+                "95% Best Capital",
+                f"₹{np.percentile(final_values, 95):,.0f}"
+            )
+
+            mc_c4.metric(
+                "Median Max DD",
+                f"{np.median(simulated_max_dd) * 100:.2f}%"
+            )
+
+            # Distribution
+
+            fig_mc = go.Figure()
+
+            fig_mc.add_trace(
+                go.Histogram(
+                    x=simulated_returns * 100,
+                    nbinsx=50,
+                    name="Simulated Returns"
+                )
+            )
+
+            fig_mc.add_vline(
+                x=0,
+                line_dash="dash",
+                annotation_text="Break-even"
+            )
+
+            fig_mc.update_layout(
+                template="plotly_dark",
+                height=380,
+                title="Monte Carlo Return Distribution",
+                xaxis_title="1-Year Simulated Return (%)",
+                yaxis_title="Frequency"
+            )
+
+            st.plotly_chart(
+                fig_mc,
+                use_container_width=True,
+                key="quant_mc_distribution"
+            )
+
+            probability_loss = (
+                simulated_returns < 0
+            ).mean()
+
+            probability_positive = (
+                simulated_returns > 0
+            ).mean()
+
+            if probability_positive >= 0.70:
+
+                st.success(
+                    f"🟢 Monte Carlo: "
+                    f"{probability_positive * 100:.1f}% "
+                    f"simulations profitable."
+                )
+
+            elif probability_positive >= 0.50:
+
+                st.warning(
+                    f"🟡 Monte Carlo: "
+                    f"{probability_positive * 100:.1f}% "
+                    f"simulations profitable."
+                )
+
             else:
 
-                qt_returns = qt_prices.pct_change().dropna()
-                qt_valid_symbols = [s for s in qt_symbols if s in qt_prices.columns]
-
-                # ─────────────────────────────────────────
-# CORRELATION MATRIX
-# ─────────────────────────────────────────
-
-                st.markdown("#### 🔗 Correlation Matrix (Daily Returns)")
-
-                qt_corr = qt_returns.corr()
-
-                fig_qt_corr = px.imshow(
-                    qt_corr,
-                    text_auto=".2f",
-                    color_continuous_scale="RdBu",
-                    zmin=-1, zmax=1,
-                    title="Correlation Heatmap"
+                st.error(
+                    f"🔴 Monte Carlo: "
+                    f"only {probability_positive * 100:.1f}% "
+                    f"simulations profitable."
                 )
 
-                st.plotly_chart(fig_qt_corr, use_container_width="stretch", key="qt_corr_heatmap")
+        else:
 
-                qt_high_corr_pairs = []
-                for i in range(len(qt_valid_symbols)):
-                    for j in range(i + 1, len(qt_valid_symbols)):
-                        qt_s1, qt_s2 = qt_valid_symbols[i], qt_valid_symbols[j]
-                        qt_c = qt_corr.loc[qt_s1, qt_s2]
-                        if abs(qt_c) > 0.8:
-                            qt_high_corr_pairs.append(f"{qt_s1}-{qt_s2} ({qt_c:.2f})")
+            st.info(
+                "Monte Carlo ke liye sufficient strategy returns nahi hain."
+            )
 
-                if qt_high_corr_pairs:
-                    st.warning(
-                        "⚠️ High correlation (>0.8) pairs mile — "
-                        "diversification benefit kam ho sakta hai: " + ", ".join(qt_high_corr_pairs)
-                    )
+        # ========================================================
+        # MARKET REGIME DETECTION
+        # ========================================================
+
+        st.markdown(
+            "### 🌦️ Market Regime Detection"
+        )
+
+        regime = research_data.copy()
+
+        regime["SMA50"] = (
+            regime["Close"]
+            .rolling(50)
+            .mean()
+        )
+
+        regime["SMA200"] = (
+            regime["Close"]
+            .rolling(200)
+            .mean()
+        )
+
+        regime["Vol20"] = (
+            regime["Return"]
+            .rolling(20)
+            .std()
+            * np.sqrt(252)
+        )
+
+        latest = regime.iloc[-1]
+
+        current_price = latest["Close"]
+        sma50 = latest["SMA50"]
+        sma200 = latest["SMA200"]
+        volatility = latest["Vol20"]
+
+        if (
+            current_price > sma200
+            and sma50 > sma200
+        ):
+
+            market_regime = "🟢 BULL TREND"
+
+        elif (
+            current_price < sma200
+            and sma50 < sma200
+        ):
+
+            market_regime = "🔴 BEAR TREND"
+
+        else:
+
+            market_regime = "🟡 SIDEWAYS / TRANSITION"
+
+
+        regime_c1, regime_c2, regime_c3 = st.columns(3)
+
+        regime_c1.metric(
+            "Current Regime",
+            market_regime
+        )
+
+        regime_c2.metric(
+            "Price vs SMA200",
+            f"{((current_price / sma200) - 1) * 100:.2f}%"
+            if pd.notna(sma200)
+            else "N/A"
+        )
+
+        regime_c3.metric(
+            "Annualized Volatility",
+            f"{volatility * 100:.2f}%"
+            if pd.notna(volatility)
+            else "N/A"
+        )
+
+
+        # ========================================================
+        # QUANT ROBUSTNESS SCORE
+        # ========================================================
+
+        st.markdown(
+            "### 🏆 Quant Robustness Score"
+        )
+
+        score = 0
+
+        # Sharpe
+        base_sharpe = (
+            mc_metrics["Sharpe"]
+            if mc_metrics
+            else 0
+        )
+
+        if base_sharpe >= 2:
+            score += 25
+        elif base_sharpe >= 1:
+            score += 18
+        elif base_sharpe > 0:
+            score += 10
+
+        # Drawdown
+        base_dd = (
+            mc_metrics["Max Drawdown"]
+            if mc_metrics
+            else 1
+        )
+
+        if base_dd < 0.10:
+            score += 20
+        elif base_dd < 0.20:
+            score += 15
+        elif base_dd < 0.30:
+            score += 8
+
+        # Win rate
+        base_win = (
+            mc_metrics["Win Rate"]
+            if mc_metrics
+            else 0
+        )
+
+        if base_win >= 0.60:
+            score += 20
+        elif base_win >= 0.50:
+            score += 14
+        elif base_win >= 0.40:
+            score += 8
+
+        # Profit factor
+        base_pf = (
+            mc_metrics["Profit Factor"]
+            if mc_metrics
+            else 0
+        )
+
+        if np.isfinite(base_pf):
+
+            if base_pf >= 2:
+                score += 20
+
+            elif base_pf >= 1.5:
+                score += 15
+
+            elif base_pf >= 1:
+                score += 8
+
+        else:
+
+            score += 20
+
+        # Monte Carlo
+        if (
+            len(mc_returns) > 20
+        ):
+
+            if probability_positive >= 0.70:
+                score += 15
+
+            elif probability_positive >= 0.55:
+                score += 10
+
+            elif probability_positive >= 0.50:
+                score += 5
+
+
+        score = min(
+            100,
+            int(score)
+        )
+
+
+        score_c1, score_c2 = st.columns(
+            [1, 3]
+        )
+
+        with score_c1:
+
+            st.metric(
+                "Robustness Score",
+                f"{score}/100"
+            )
+
+        with score_c2:
+
+            st.progress(
+                score / 100
+            )
+
+            if score >= 80:
+
+                st.success(
+                    "🟢 Strong research characteristics"
+                )
+
+            elif score >= 60:
+
+                st.info(
+                    "🟡 Moderate robustness — further validation required"
+                )
+
+            elif score >= 40:
+
+                st.warning(
+                    "🟠 Weak/moderate strategy robustness"
+                )
+
+            else:
+
+                st.error(
+                    "🔴 High research risk / weak historical edge"
+                )
+
+
+        # ========================================================
+        # AI-STYLE RESEARCH SUMMARY
+        # ========================================================
+
+        st.markdown(
+            "### 🧠 Research Summary"
+        )
+
+        summary_points = []
+
+        if base_sharpe >= 1:
+
+            summary_points.append(
+                "Risk-adjusted performance historically positive hai."
+            )
+
+        else:
+
+            summary_points.append(
+                "Risk-adjusted performance weak hai."
+            )
+
+        if base_dd < 0.20:
+
+            summary_points.append(
+                "Maximum drawdown relatively controlled raha."
+            )
+
+        else:
+
+            summary_points.append(
+                "Drawdown significant raha — position sizing important hai."
+            )
+
+        if probability_positive >= 0.60:
+
+            summary_points.append(
+                "Monte Carlo simulations me majority outcomes profitable rahe."
+            )
+
+        else:
+
+            summary_points.append(
+                "Monte Carlo results uncertain hain."
+            )
+
+        if market_regime.startswith("🟢"):
+
+            summary_points.append(
+                "Current market regime bullish trend jaisa behave kar raha hai."
+            )
+
+        elif market_regime.startswith("🔴"):
+
+            summary_points.append(
+                "Current market regime bearish trend jaisa behave kar raha hai."
+            )
+
+        else:
+
+            summary_points.append(
+                "Current market regime transition/sideways zone me hai."
+            )
+
+        for point in summary_points:
+
+            st.write(
+                f"• {point}"
+            )
+
+
+        # ========================================================
+        # DOWNLOAD RESEARCH REPORT
+        # ========================================================
+
+        research_report = pd.DataFrame(
+            {
+                "Metric": [
+                    "Strategy",
+                    "Current Regime",
+                    "Robustness Score",
+                    "Sharpe",
+                    "Sortino",
+                    "CAGR",
+                    "Max Drawdown",
+                    "Win Rate",
+                    "Profit Factor",
+                    "Monte Carlo Profit Probability"
+                ],
+
+                "Value": [
+                    research_strategy,
+                    market_regime,
+                    score,
+                    mc_metrics.get(
+                        "Sharpe",
+                        np.nan
+                    ),
+                    mc_metrics.get(
+                        "Sortino",
+                        np.nan
+                    ),
+                    mc_metrics.get(
+                        "CAGR",
+                        np.nan
+                    ),
+                    mc_metrics.get(
+                        "Max Drawdown",
+                        np.nan
+                    ),
+                    mc_metrics.get(
+                        "Win Rate",
+                        np.nan
+                    ),
+                    mc_metrics.get(
+                        "Profit Factor",
+                        np.nan
+                    ),
+                    probability_positive
+                    if len(mc_returns) > 20
+                    else np.nan
+                ]
+            }
+        )
+
+        st.download_button(
+            "📥 Download Quant Research Report",
+            research_report.to_csv(
+                index=False
+            ).encode("utf-8"),
+            file_name=(
+                f"{q_symbol.upper()}_"
+                f"quant_research_report.csv"
+            ),
+            mime="text/csv",
+            key="quant_v3_download"
+        )
+
+            # ============================================================
+    # QUANT V4 — PORTFOLIO + RISK + POSITION SIZING ENGINE
+    # ============================================================
+
+    st.markdown("---")
+    st.subheader("🚀 Quant V4 — Portfolio & Risk Engine")
+
+    st.caption(
+        "Portfolio backtesting, position sizing, risk analytics and "
+        "portfolio optimization research."
+    )
+
+    # ------------------------------------------------------------
+    # 1. PORTFOLIO STOCK SELECTION
+    # ------------------------------------------------------------
+
+    v4_default_stocks = [
+        "RELIANCE.NS",
+        "TCS.NS",
+        "HDFCBANK.NS",
+        "INFY.NS",
+        "ICICIBANK.NS",
+        "SBIN.NS",
+        "ITC.NS",
+        "LT.NS",
+    ]
+
+    v4_stocks = st.multiselect(
+        "📊 Select Portfolio Stocks",
+        options=v4_default_stocks,
+        default=v4_default_stocks[:5],
+        key="quant_v4_stocks"
+    )
+
+    col_v4_1, col_v4_2, col_v4_3 = st.columns(3)
+
+    with col_v4_1:
+        v4_capital = st.number_input(
+            "💰 Portfolio Capital",
+            min_value=10000,
+            value=100000,
+            step=10000,
+            key="quant_v4_capital"
+        )
+
+    with col_v4_2:
+        v4_period = st.selectbox(
+            "📅 Backtest Period",
+            ["1y", "2y", "3y", "5y"],
+            index=1,
+            key="quant_v4_period"
+        )
+
+    with col_v4_3:
+        v4_sizing = st.selectbox(
+            "⚖️ Position Sizing",
+            [
+                "Equal Weight",
+                "Volatility Weighted",
+                "Risk Parity Proxy"
+            ],
+            key="quant_v4_sizing"
+        )
+
+
+    # ------------------------------------------------------------
+    # 2. PORTFOLIO SETTINGS
+    # ------------------------------------------------------------
+
+    col_v4_4, col_v4_5, col_v4_6 = st.columns(3)
+
+    with col_v4_4:
+        v4_fee_bps = st.number_input(
+            "Brokerage / Fees (bps)",
+            min_value=0.0,
+            value=5.0,
+            step=0.5,
+            key="quant_v4_fee"
+        )
+
+    with col_v4_5:
+        v4_slippage_bps = st.number_input(
+            "Slippage (bps)",
+            min_value=0.0,
+            value=5.0,
+            step=0.5,
+            key="quant_v4_slippage"
+        )
+
+    with col_v4_6:
+        v4_max_position = st.slider(
+            "Max Position %",
+            10,
+            100,
+            40,
+            key="quant_v4_max_position"
+        ) / 100
+
+
+    # ------------------------------------------------------------
+    # 3. DOWNLOAD PORTFOLIO DATA
+    # ------------------------------------------------------------
+
+    if st.button(
+        "▶️ Run Quant V4 Portfolio Research",
+        use_container_width=True,
+        key="run_quant_v4"
+    ):
+
+        if len(v4_stocks) < 2:
+            st.warning("Please select at least 2 stocks.")
+            st.stop()
+
+        v4_data = {}
+
+        progress_v4 = st.progress(0)
+
+        for i, symbol in enumerate(v4_stocks):
+
+            try:
+                ticker = yf.Ticker(symbol)
+
+                hist = ticker.history(
+                    period=v4_period,
+                    auto_adjust=True
+                )
+
+                if hist is not None and not hist.empty:
+                    hist = hist[["Close"]].copy()
+                    hist.columns = [symbol]
+                    v4_data[symbol] = hist[symbol]
+
+            except Exception:
+                pass
+
+            progress_v4.progress(
+                int((i + 1) / len(v4_stocks) * 100)
+            )
+
+        progress_v4.empty()
+
+        if len(v4_data) < 2:
+            st.error("Unable to download enough portfolio data.")
+            st.stop()
+
+        # --------------------------------------------------------
+        # 4. CREATE PRICE MATRIX
+        # --------------------------------------------------------
+
+        v4_prices = pd.concat(
+            v4_data.values(),
+            axis=1
+        )
+
+        v4_prices.columns = list(v4_data.keys())
+
+        v4_prices = v4_prices.ffill().dropna()
+
+        if len(v4_prices) < 100:
+            st.warning("Not enough historical observations.")
+            st.stop()
+
+        # --------------------------------------------------------
+        # 5. RETURNS
+        # --------------------------------------------------------
+
+        v4_returns = v4_prices.pct_change().dropna()
+
+        # --------------------------------------------------------
+        # 6. VOLATILITY
+        # --------------------------------------------------------
+
+        v4_volatility = v4_returns.std() * np.sqrt(252)
+
+        # --------------------------------------------------------
+        # 7. POSITION WEIGHTS
+        # --------------------------------------------------------
+
+        if v4_sizing == "Equal Weight":
+
+            v4_weights = pd.Series(
+                1 / len(v4_returns.columns),
+                index=v4_returns.columns
+            )
+
+        elif v4_sizing == "Volatility Weighted":
+
+            inverse_vol = 1 / v4_volatility.replace(0, np.nan)
+
+            inverse_vol = inverse_vol.fillna(0)
+
+            v4_weights = inverse_vol / inverse_vol.sum()
+
+        else:
+
+            # Risk parity proxy
+            inverse_vol = 1 / v4_volatility.replace(0, np.nan)
+
+            inverse_vol = inverse_vol.fillna(0)
+
+            v4_weights = inverse_vol / inverse_vol.sum()
+
+        # --------------------------------------------------------
+        # 8. MAX POSITION CONSTRAINT
+        # --------------------------------------------------------
+
+        v4_weights = v4_weights.clip(
+            upper=v4_max_position
+        )
+
+        if v4_weights.sum() > 0:
+            v4_weights = v4_weights / v4_weights.sum()
+
+        # --------------------------------------------------------
+        # 9. PORTFOLIO RETURNS
+        # --------------------------------------------------------
+
+        v4_portfolio_returns = (
+            v4_returns * v4_weights
+        ).sum(axis=1)
+
+        # Transaction-cost approximation
+        v4_cost = (
+            (v4_fee_bps + v4_slippage_bps) / 10000
+        )
+
+        v4_turnover = v4_weights.abs().sum()
+
+        v4_portfolio_returns = (
+            v4_portfolio_returns
+            - (v4_cost * v4_turnover / 252)
+        )
+
+        # --------------------------------------------------------
+        # 10. EQUITY CURVE
+        # --------------------------------------------------------
+
+        v4_equity = (
+            1 + v4_portfolio_returns
+        ).cumprod() * v4_capital
+
+        # --------------------------------------------------------
+        # 11. RISK METRICS
+        # --------------------------------------------------------
+
+        v4_total_return = (
+            v4_equity.iloc[-1] / v4_capital
+        ) - 1
+
+        v4_years = (
+            len(v4_portfolio_returns) / 252
+        )
+
+        if v4_years > 0:
+
+            v4_cagr = (
+                v4_equity.iloc[-1] / v4_capital
+            ) ** (1 / v4_years) - 1
+
+        else:
+            v4_cagr = 0
+
+        v4_ann_vol = (
+            v4_portfolio_returns.std()
+            * np.sqrt(252)
+        )
+
+        if v4_ann_vol > 0:
+
+            v4_sharpe = (
+                v4_portfolio_returns.mean()
+                / v4_portfolio_returns.std()
+            ) * np.sqrt(252)
+
+        else:
+            v4_sharpe = 0
+
+        # --------------------------------------------------------
+        # 12. DRAWDOWN
+        # --------------------------------------------------------
+
+        v4_running_max = v4_equity.cummax()
+
+        v4_drawdown = (
+            v4_equity / v4_running_max
+        ) - 1
+
+        v4_max_dd = v4_drawdown.min()
+
+        # --------------------------------------------------------
+        # 13. VAR / CVAR
+        # --------------------------------------------------------
+
+        v4_var_95 = (
+            v4_portfolio_returns
+            .quantile(0.05)
+        )
+
+        v4_cvar_95 = (
+            v4_portfolio_returns[
+                v4_portfolio_returns <= v4_var_95
+            ].mean()
+        )
+
+        # --------------------------------------------------------
+        # 14. BETA VS NIFTY
+        # --------------------------------------------------------
+
+        try:
+
+            v4_nifty = yf.Ticker("^NSEI").history(
+                period=v4_period,
+                auto_adjust=True
+            )["Close"]
+
+            v4_nifty_returns = (
+                v4_nifty.pct_change()
+                .dropna()
+            )
+
+            v4_beta_df = pd.concat(
+                [
+                    v4_portfolio_returns,
+                    v4_nifty_returns
+                ],
+                axis=1
+            ).dropna()
+
+            v4_beta_df.columns = [
+                "Portfolio",
+                "NIFTY"
+            ]
+
+            if v4_beta_df["NIFTY"].var() > 0:
+
+                v4_beta = (
+                    v4_beta_df["Portfolio"]
+                    .cov(v4_beta_df["NIFTY"])
+                    /
+                    v4_beta_df["NIFTY"].var()
+                )
+
+            else:
+                v4_beta = 0
+
+        except Exception:
+
+            v4_beta = np.nan
+
+        # --------------------------------------------------------
+        # 15. ALPHA
+        # --------------------------------------------------------
+
+        if not np.isnan(v4_beta):
+
+            try:
+
+                nifty_mean = v4_beta_df["NIFTY"].mean()
+
+                portfolio_mean = (
+                    v4_beta_df["Portfolio"].mean()
+                )
+
+                v4_alpha = (
+                    portfolio_mean
+                    -
+                    v4_beta * nifty_mean
+                ) * 252
+
+            except Exception:
+
+                v4_alpha = np.nan
+
+        else:
+
+            v4_alpha = np.nan
+
+        # --------------------------------------------------------
+        # 16. WIN RATE
+        # --------------------------------------------------------
+
+        v4_win_rate = (
+            (v4_portfolio_returns > 0).mean()
+        )
+
+        # --------------------------------------------------------
+        # 17. PROFIT FACTOR
+        # --------------------------------------------------------
+
+        v4_profit = (
+            v4_portfolio_returns[
+                v4_portfolio_returns > 0
+            ].sum()
+        )
+
+        v4_loss = abs(
+            v4_portfolio_returns[
+                v4_portfolio_returns < 0
+            ].sum()
+        )
+
+        if v4_loss > 0:
+            v4_profit_factor = (
+                v4_profit / v4_loss
+            )
+        else:
+            v4_profit_factor = np.inf
+
+        # --------------------------------------------------------
+        # 18. PERFORMANCE METRICS UI
+        # --------------------------------------------------------
+
+        st.markdown("### 📈 Portfolio Performance")
+
+        m1, m2, m3, m4 = st.columns(4)
+
+        m1.metric(
+            "Total Return",
+            f"{v4_total_return * 100:.2f}%"
+        )
+
+        m2.metric(
+            "CAGR",
+            f"{v4_cagr * 100:.2f}%"
+        )
+
+        m3.metric(
+            "Sharpe",
+            f"{v4_sharpe:.2f}"
+        )
+
+        m4.metric(
+            "Max Drawdown",
+            f"{v4_max_dd * 100:.2f}%"
+        )
+
+        m5, m6, m7, m8 = st.columns(4)
+
+        m5.metric(
+            "Volatility",
+            f"{v4_ann_vol * 100:.2f}%"
+        )
+
+        m6.metric(
+            "Beta",
+            f"{v4_beta:.2f}"
+            if not np.isnan(v4_beta)
+            else "N/A"
+        )
+
+        m7.metric(
+            "Win Rate",
+            f"{v4_win_rate * 100:.2f}%"
+        )
+
+        m8.metric(
+            "Profit Factor",
+            f"{v4_profit_factor:.2f}"
+            if np.isfinite(v4_profit_factor)
+            else "∞"
+        )
+
+        # --------------------------------------------------------
+        # 19. FINAL CAPITAL
+        # --------------------------------------------------------
+
+        st.success(
+            f"💰 Final Portfolio Value: "
+            f"₹{v4_equity.iloc[-1]:,.2f}"
+        )
+
+        # --------------------------------------------------------
+        # 20. EQUITY CURVE
+        # --------------------------------------------------------
+
+        st.markdown("### 📊 Portfolio Equity Curve")
+
+        fig_v4_equity = go.Figure()
+
+        fig_v4_equity.add_trace(
+            go.Scatter(
+                x=v4_equity.index,
+                y=v4_equity.values,
+                mode="lines",
+                name="Portfolio"
+            )
+        )
+
+        fig_v4_equity.update_layout(
+            xaxis_title="Date",
+            yaxis_title="Portfolio Value",
+            hovermode="x unified"
+        )
+
+        st.plotly_chart(
+            fig_v4_equity,
+            use_container_width=True,
+            key="quant_v4_equity"
+        )
+
+        # --------------------------------------------------------
+        # 21. DRAWDOWN CHART
+        # --------------------------------------------------------
+
+        st.markdown("### 📉 Portfolio Drawdown")
+
+        fig_v4_dd = go.Figure()
+
+        fig_v4_dd.add_trace(
+            go.Scatter(
+                x=v4_drawdown.index,
+                y=v4_drawdown.values * 100,
+                mode="lines",
+                name="Drawdown"
+            )
+        )
+
+        fig_v4_dd.update_layout(
+            xaxis_title="Date",
+            yaxis_title="Drawdown (%)",
+            hovermode="x unified"
+        )
+
+        st.plotly_chart(
+            fig_v4_dd,
+            use_container_width=True,
+            key="quant_v4_drawdown"
+        )
+
+        # --------------------------------------------------------
+        # 22. ALLOCATION
+        # --------------------------------------------------------
+
+        st.markdown("### ⚖️ Portfolio Allocation")
+
+        allocation_df = pd.DataFrame({
+            "Stock": v4_weights.index,
+            "Weight": v4_weights.values
+        })
+
+        fig_v4_alloc = px.pie(
+            allocation_df,
+            names="Stock",
+            values="Weight",
+            title="Portfolio Allocation"
+        )
+
+        st.plotly_chart(
+            fig_v4_alloc,
+            use_container_width=True,
+            key="quant_v4_allocation"
+        )
+
+        # --------------------------------------------------------
+        # 23. WEIGHT TABLE
+        # --------------------------------------------------------
+
+        allocation_display = allocation_df.copy()
+
+        allocation_display["Weight"] = (
+            allocation_display["Weight"] * 100
+        ).round(2)
+
+        allocation_display["Capital"] = (
+            allocation_display["Weight"] / 100
+            * v4_capital
+        ).round(2)
+
+        allocation_display.columns = [
+            "Stock",
+            "Weight %",
+            "Capital ₹"
+        ]
+
+        st.dataframe(
+            allocation_display,
+            use_container_width=True,
+            hide_index=True
+        )
+
+        # --------------------------------------------------------
+        # 24. STOCK RISK TABLE
+        # --------------------------------------------------------
+
+        st.markdown("### 🛡️ Individual Stock Risk")
+
+        v4_risk_table = pd.DataFrame({
+            "Stock": v4_volatility.index,
+            "Annual Volatility %": (
+                v4_volatility.values * 100
+            )
+        })
+
+        v4_risk_table = v4_risk_table.sort_values(
+            "Annual Volatility %",
+            ascending=False
+        )
+
+        st.dataframe(
+            v4_risk_table.round(2),
+            use_container_width=True,
+            hide_index=True
+        )
+
+        # --------------------------------------------------------
+        # 25. CORRELATION MATRIX
+        # --------------------------------------------------------
+
+        st.markdown("### 🔗 Portfolio Correlation Matrix")
+
+        v4_corr = v4_returns.corr()
+
+        fig_v4_corr = px.imshow(
+            v4_corr,
+            text_auto=".2f",
+            aspect="auto",
+            title="Stock Return Correlation"
+        )
+
+        st.plotly_chart(
+            fig_v4_corr,
+            use_container_width=True,
+            key="quant_v4_corr"
+        )
+
+        # --------------------------------------------------------
+        # 26. RISK-RETURN MAP
+        # --------------------------------------------------------
+
+        st.markdown("### 🎯 Risk vs Return")
+
+        v4_stock_return = (
+            v4_returns.mean() * 252
+        )
+
+        v4_risk_return = pd.DataFrame({
+            "Stock": v4_stock_return.index,
+            "Annual Return": v4_stock_return.values,
+            "Annual Risk": v4_volatility.values
+        })
+
+        fig_v4_rr = px.scatter(
+            v4_risk_return,
+            x="Annual Risk",
+            y="Annual Return",
+            text="Stock",
+            title="Risk vs Return"
+        )
+
+        fig_v4_rr.update_traces(
+            textposition="top center"
+        )
+
+        st.plotly_chart(
+            fig_v4_rr,
+            use_container_width=True,
+            key="quant_v4_risk_return"
+        )
+
+        # --------------------------------------------------------
+        # 27. PORTFOLIO RISK SCORE
+        # --------------------------------------------------------
+
+        v4_risk_score = 100
+
+        if v4_ann_vol > 0.30:
+            v4_risk_score -= 20
+        elif v4_ann_vol > 0.20:
+            v4_risk_score -= 10
+
+        if abs(v4_max_dd) > 0.30:
+            v4_risk_score -= 25
+        elif abs(v4_max_dd) > 0.20:
+            v4_risk_score -= 15
+
+        if abs(v4_beta) > 1.30 if not np.isnan(v4_beta) else False:
+            v4_risk_score -= 10
+
+        if v4_sharpe > 1:
+            v4_risk_score += 5
+
+        v4_risk_score = int(
+            np.clip(v4_risk_score, 0, 100)
+        )
+
+        st.markdown("### 🧠 Portfolio Risk Score")
+
+        r1, r2 = st.columns(2)
+
+        with r1:
+            st.metric(
+                "Risk Score",
+                f"{v4_risk_score}/100"
+            )
+
+        with r2:
+
+            if v4_risk_score >= 80:
+                st.success("🟢 Strong Risk Profile")
+
+            elif v4_risk_score >= 60:
+                st.info("🟡 Moderate Risk")
+
+            else:
+                st.warning("🔴 High Risk")
+
+        # --------------------------------------------------------
+        # 28. QUANT V4 RESEARCH SUMMARY
+        # --------------------------------------------------------
+
+        st.markdown("### 🤖 Quant V4 Research Summary")
+
+        if v4_sharpe >= 1:
+            st.write(
+                "• Portfolio has a strong risk-adjusted return profile."
+            )
+        elif v4_sharpe >= 0.5:
+            st.write(
+                "• Portfolio has a moderate risk-adjusted return profile."
+            )
+        else:
+            st.write(
+                "• Risk-adjusted performance is currently weak."
+            )
+
+        if abs(v4_max_dd) < 0.15:
+            st.write(
+                "• Historical drawdown is relatively controlled."
+            )
+        elif abs(v4_max_dd) < 0.30:
+            st.write(
+                "• Portfolio experienced meaningful historical drawdowns."
+            )
+        else:
+            st.write(
+                "• Portfolio has experienced high historical drawdown."
+            )
+
+        if not np.isnan(v4_beta):
+
+            if v4_beta > 1:
+                st.write(
+                    "• Portfolio is more sensitive to NIFTY movements."
+                )
+            else:
+                st.write(
+                    "• Portfolio has lower market sensitivity than NIFTY."
+                )
+
+        st.write(
+            f"• Position sizing method: **{v4_sizing}**"
+        )
+
+        st.write(
+            f"• Maximum allowed single-stock allocation: "
+            f"**{v4_max_position * 100:.0f}%**"
+        )
+
+        # --------------------------------------------------------
+        # 29. CSV EXPORT
+        # --------------------------------------------------------
+
+        v4_report = pd.DataFrame({
+            "Metric": [
+                "Initial Capital",
+                "Final Capital",
+                "Total Return",
+                "CAGR",
+                "Annual Volatility",
+                "Sharpe",
+                "Max Drawdown",
+                "VaR 95",
+                "CVaR 95",
+                "Beta",
+                "Alpha",
+                "Win Rate",
+                "Profit Factor",
+                "Risk Score"
+            ],
+            "Value": [
+                v4_capital,
+                v4_equity.iloc[-1],
+                v4_total_return,
+                v4_cagr,
+                v4_ann_vol,
+                v4_sharpe,
+                v4_max_dd,
+                v4_var_95,
+                v4_cvar_95,
+                v4_beta,
+                v4_alpha,
+                v4_win_rate,
+                v4_profit_factor,
+                v4_risk_score
+            ]
+        })
+
+        st.download_button(
+            "📥 Download Quant V4 Research Report",
+            data=v4_report.to_csv(index=False).encode("utf-8"),
+            file_name="BharatFinAI_Quant_V4_Report.csv",
+            mime="text/csv",
+            key="download_quant_v4"
+        )
+
+
+    # ============================================================
+    # END QUANT V4
+
+
+
+    # ============================================================
+    # QUANT V5 — ML QUANT SIGNAL ENGINE
+    # ============================================================
+
+    st.markdown("---")
+    st.subheader("🤖 Quant V5 — ML Quant Signal Engine")
+    st.caption(
+        "Machine-learning based directional signal research. "
+        "Time-series aware validation. No random shuffle of financial data."
+    )
+
+    v5_c1, v5_c2, v5_c3 = st.columns(3)
+    with v5_c1:
+        v5_symbol = st.text_input("Stock Symbol", value="RELIANCE", key="quant_v5_symbol")
+    with v5_c2:
+        v5_period = st.selectbox("History Period", ["1y", "2y", "3y", "5y"], index=2, key="quant_v5_period")
+    with v5_c3:
+        v5_horizon = st.selectbox("Prediction Horizon (days)", [1, 3, 5, 10], index=1, key="quant_v5_horizon")
+
+    v5_threshold = st.slider("Future Return Threshold (%) for BUY", 0.5, 5.0, 1.0, 0.1, key="quant_v5_thresh") / 100
+
+    if st.button("▶️ Run ML Analysis", key="run_quant_v5", use_container_width=True):
+        try:
+            from sklearn.linear_model import LogisticRegression
+            from sklearn.ensemble import RandomForestClassifier, HistGradientBoostingClassifier
+            from sklearn.model_selection import train_test_split
+            from sklearn.metrics import (
+                accuracy_score, precision_score, recall_score, f1_score,
+                roc_auc_score, confusion_matrix
+            )
+            from sklearn.preprocessing import StandardScaler
+            import warnings
+            warnings.filterwarnings("ignore")
+
+            yf_sym = v5_symbol.upper() if v5_symbol.upper().endswith(".NS") else v5_symbol.upper() + ".NS"
+            hist = yf.Ticker(yf_sym).history(period=v5_period, auto_adjust=True)
+
+            if hist is None or len(hist) < 120:
+                st.warning("Insufficient historical data for reliable ML training (need ~120+ trading days).")
+            else:
+                df = hist.copy()
+                df["Return"] = df["Close"].pct_change()
+                df["RSI"] = 100 - (100 / (1 + (
+                    df["Close"].diff().clip(lower=0).rolling(14).mean() /
+                    (-df["Close"].diff().clip(upper=0).rolling(14).mean()).replace(0, np.nan)
+                )))
+                df["SMA20"] = df["Close"].rolling(20).mean()
+                df["SMA50"] = df["Close"].rolling(50).mean()
+                df["EMA12"] = df["Close"].ewm(span=12, adjust=False).mean()
+                df["EMA26"] = df["Close"].ewm(span=26, adjust=False).mean()
+                df["MACD"] = df["EMA12"] - df["EMA26"]
+                df["MACD_Signal"] = df["MACD"].ewm(span=9, adjust=False).mean()
+                df["BB_Mid"] = df["Close"].rolling(20).mean()
+                df["BB_Std"] = df["Close"].rolling(20).std()
+                df["BB_Upper"] = df["BB_Mid"] + 2 * df["BB_Std"]
+                df["BB_Lower"] = df["BB_Mid"] - 2 * df["BB_Std"]
+                df["Momentum"] = df["Close"] / df["Close"].shift(10) - 1
+                df["Volatility"] = df["Return"].rolling(20).std()
+                df["Volume_Change"] = df["Volume"].pct_change()
+                df["ATR"] = (
+                    pd.concat([
+                        df["High"] - df["Low"],
+                        (df["High"] - df["Close"].shift()).abs(),
+                        (df["Low"] - df["Close"].shift()).abs()
+                    ], axis=1).max(axis=1).rolling(14).mean()
+                )
+                df["Dist_SMA20"] = (df["Close"] - df["SMA20"]) / df["SMA20"]
+                df["Dist_EMA12"] = (df["Close"] - df["EMA12"]) / df["EMA12"]
+
+                # Target: future return > threshold
+                df["Future_Return"] = df["Close"].shift(-v5_horizon) / df["Close"] - 1
+                df["Target"] = (df["Future_Return"] > v5_threshold).astype(int)
+
+                feature_cols = [
+                    "Return", "RSI", "MACD", "MACD_Signal", "SMA20", "SMA50",
+                    "EMA12", "EMA26", "Momentum", "Volatility", "Volume_Change",
+                    "ATR", "Dist_SMA20", "Dist_EMA12"
+                ]
+                # Keep only available
+                feature_cols = [c for c in feature_cols if c in df.columns]
+                data = df[feature_cols + ["Target"]].dropna()
+
+                if len(data) < 80:
+                    st.warning("After feature engineering, not enough clean rows for training.")
                 else:
-                    st.success("✅ Koi extreme high-correlation pair (>0.8) nahi mila — reasonable diversification hai.")
+                    # Time-series split: first 70% train, last 30% test (NO shuffle)
+                    split_idx = int(len(data) * 0.70)
+                    X = data[feature_cols]
+                    y = data["Target"]
+                    X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:]
+                    y_train, y_test = y.iloc[:split_idx], y.iloc[split_idx:]
 
-                # ─────────────────────────────────────────
-# BETA / ALPHA (CAPM REGRESSION)
-# ─────────────────────────────────────────
+                    scaler = StandardScaler()
+                    X_train_s = scaler.fit_transform(X_train)
+                    X_test_s = scaler.transform(X_test)
 
-                st.markdown("#### 📐 Beta / Alpha (CAPM vs NIFTY)")
+                    models = {
+                        "Logistic Regression": LogisticRegression(max_iter=500, class_weight="balanced"),
+                        "Random Forest": RandomForestClassifier(n_estimators=100, max_depth=6, random_state=42, class_weight="balanced"),
+                        "HistGradientBoosting": HistGradientBoostingClassifier(max_depth=5, learning_rate=0.08, random_state=42),
+                    }
 
-                qt_capm_rows = []
-
-                for qt_s in qt_valid_symbols:
-                    qt_x = qt_returns["NIFTY"].values
-                    qt_y = qt_returns[qt_s].values
-
-                    qt_slope, qt_intercept = np.polyfit(qt_x, qt_y, 1)
-                    qt_y_pred = qt_slope * qt_x + qt_intercept
-                    qt_ss_res = np.sum((qt_y - qt_y_pred) ** 2)
-                    qt_ss_tot = np.sum((qt_y - qt_y.mean()) ** 2)
-                    qt_r2 = 1 - (qt_ss_res / qt_ss_tot) if qt_ss_tot != 0 else 0
-
-                    qt_annual_alpha = qt_intercept * 252 * 100
-
-                    qt_capm_rows.append({
-                        "Stock": qt_s,
-                        "Beta": round(qt_slope, 2),
-                        "Alpha (Annualized %)": round(qt_annual_alpha, 2),
-                        "R² (Fit Quality)": round(qt_r2, 3),
-                    })
-
-                qt_capm_df = pd.DataFrame(qt_capm_rows)
-
-                st.dataframe(qt_capm_df, use_container_width=True, hide_index=True)
-
-                st.caption(
-                    "Beta > 1 = market se zyada volatile. Alpha > 0 = market-adjusted excess return positive hai. "
-                    "R² kam ho (<0.3) to iska matlab stock ka movement NIFTY se zyada explain nahi hota — "
-                    "stock-specific factors zyada matter karte hain."
-                )
-
-                # ─────────────────────────────────────────
-# ROLLING BETA (stability check)
-# ─────────────────────────────────────────
-
-                st.markdown("#### 📉 Rolling Beta (60-day window)")
-
-                qt_rolling_stock = st.selectbox(
-                    "Stock select karo", qt_valid_symbols, key="qt_rolling_select"
-                )
-
-                qt_roll_cov = qt_returns[qt_rolling_stock].rolling(60).cov(qt_returns["NIFTY"])
-                qt_roll_var = qt_returns["NIFTY"].rolling(60).var()
-                qt_rolling_beta = (qt_roll_cov / qt_roll_var).dropna()
-
-                if len(qt_rolling_beta) > 0:
-
-                    fig_qt_roll = px.line(
-                        x=qt_rolling_beta.index, y=qt_rolling_beta.values,
-                        labels={"x": "Date", "y": "Rolling Beta"},
-                        title=f"{qt_rolling_stock} — 60-Day Rolling Beta vs NIFTY"
-                    )
-                    fig_qt_roll.add_hline(y=1, line_dash="dash", annotation_text="Beta = 1 (market)")
-
-                    st.plotly_chart(fig_qt_roll, use_container_width="stretch", key="qt_rolling_beta_chart")
-
-                    qt_beta_std = qt_rolling_beta.std()
-                    if qt_beta_std > 0.3:
-                        st.warning(
-                            f"⚠️ {qt_rolling_stock} ka beta time ke saath kaafi unstable hai (std={qt_beta_std:.2f}) — "
-                            "market ke saath relationship consistent nahi hai."
+                    # Optional XGBoost
+                    try:
+                        from xgboost import XGBClassifier
+                        models["XGBoost (optional)"] = XGBClassifier(
+                            n_estimators=80, max_depth=4, learning_rate=0.1,
+                            use_label_encoder=False, eval_metric="logloss",
+                            random_state=42, verbosity=0
                         )
-                    else:
-                        st.info(
-                            f"🟢 {qt_rolling_stock} ka beta relatively stable hai (std={qt_beta_std:.2f}) is period me."
-                        )
+                    except ImportError:
+                        pass
+
+                    results = []
+                    trained = {}
+                    for name, model in models.items():
+                        try:
+                            if "Logistic" in name or "XGBoost" in name:
+                                model.fit(X_train_s, y_train)
+                                pred = model.predict(X_test_s)
+                                proba = model.predict_proba(X_test_s)[:, 1] if hasattr(model, "predict_proba") else pred
+                            else:
+                                model.fit(X_train, y_train)
+                                pred = model.predict(X_test)
+                                proba = model.predict_proba(X_test)[:, 1] if hasattr(model, "predict_proba") else pred
+
+                            acc = accuracy_score(y_test, pred)
+                            prec = precision_score(y_test, pred, zero_division=0)
+                            rec = recall_score(y_test, pred, zero_division=0)
+                            f1 = f1_score(y_test, pred, zero_division=0)
+                            try:
+                                auc = roc_auc_score(y_test, proba)
+                            except Exception:
+                                auc = np.nan
+
+                            results.append({
+                                "Model": name,
+                                "Accuracy": round(acc, 3),
+                                "Precision": round(prec, 3),
+                                "Recall": round(rec, 3),
+                                "F1": round(f1, 3),
+                                "ROC-AUC": round(auc, 3) if not np.isnan(auc) else "N/A"
+                            })
+                            trained[name] = (model, proba, pred)
+                        except Exception as e:
+                            st.warning(f"{name} failed: {e}")
+
+                    if results:
+                        res_df = pd.DataFrame(results).sort_values("F1", ascending=False)
+                        st.markdown("### Model Comparison")
+                        st.dataframe(res_df, use_container_width=True, hide_index=True)
+
+                        best_name = res_df.iloc[0]["Model"]
+                        best_model, best_proba, best_pred = trained[best_name]
+
+                        st.success(f"Best model by F1: **{best_name}**")
+
+                        # Confusion matrix
+                        cm = confusion_matrix(y_test, best_pred)
+                        st.markdown("#### Confusion Matrix (Best Model)")
+                        st.write(pd.DataFrame(cm, index=["Actual 0", "Actual 1"], columns=["Pred 0", "Pred 1"]))
+
+                        # Latest signal
+                        latest_feat = X.iloc[[-1]]
+                        if "Logistic" in best_name or "XGBoost" in best_name:
+                            latest_s = scaler.transform(latest_feat)
+                            latest_prob = best_model.predict_proba(latest_s)[0, 1]
+                            latest_sig = best_model.predict(latest_s)[0]
+                        else:
+                            latest_prob = best_model.predict_proba(latest_feat)[0, 1]
+                            latest_sig = best_model.predict(latest_feat)[0]
+
+                        signal_label = "BUY" if latest_sig == 1 and latest_prob > 0.55 else ("SELL" if latest_prob < 0.40 else "HOLD")
+                        st.metric("ML Signal (latest)", signal_label)
+                        st.metric("Prediction Probability (up)", f"{latest_prob*100:.1f}%")
+
+                        # Feature importance
+                        st.markdown("#### Feature Importance")
+                        if hasattr(best_model, "feature_importances_"):
+                            imp = pd.Series(best_model.feature_importances_, index=feature_cols).sort_values(ascending=False)
+                            fig_imp = px.bar(x=imp.values, y=imp.index, orientation="h", title="Feature Importance")
+                            st.plotly_chart(fig_imp, use_container_width=True, key="v5_feat_imp")
+                        elif hasattr(best_model, "coef_"):
+                            coef = pd.Series(np.abs(best_model.coef_[0]), index=feature_cols).sort_values(ascending=False)
+                            fig_imp = px.bar(x=coef.values, y=coef.index, orientation="h", title="|Coefficient| Importance")
+                            st.plotly_chart(fig_imp, use_container_width=True, key="v5_coef_imp")
+
+                        # Simple ML equity curve (long when predicted 1)
+                        test_returns = df.loc[X_test.index, "Return"].fillna(0)
+                        ml_pos = pd.Series(best_pred, index=X_test.index).shift(1).fillna(0)  # avoid look-ahead
+                        ml_eq = (1 + test_returns * ml_pos).cumprod()
+                        bh_eq = (1 + test_returns).cumprod()
+
+                        fig_eq = go.Figure()
+                        fig_eq.add_trace(go.Scatter(x=ml_eq.index, y=ml_eq.values, name="ML Strategy"))
+                        fig_eq.add_trace(go.Scatter(x=bh_eq.index, y=bh_eq.values, name="Buy & Hold"))
+                        fig_eq.update_layout(title="ML vs Buy & Hold (Test Period)", template="plotly_dark")
+                        st.plotly_chart(fig_eq, use_container_width=True, key="v5_equity")
+
+                        # Metrics
+                        ml_ret = ml_eq.iloc[-1] - 1 if len(ml_eq) else 0
+                        bh_ret = bh_eq.iloc[-1] - 1 if len(bh_eq) else 0
+                        ml_dd = ((ml_eq / ml_eq.cummax()) - 1).min() if len(ml_eq) else 0
+                        ml_sharpe = (test_returns * ml_pos).mean() / (test_returns * ml_pos).std() * np.sqrt(252) if (test_returns * ml_pos).std() > 0 else 0
+
+                        m1, m2, m3, m4 = st.columns(4)
+                        m1.metric("ML Test Return", f"{ml_ret*100:.1f}%")
+                        m2.metric("Buy&Hold Return", f"{bh_ret*100:.1f}%")
+                        m3.metric("ML Max DD", f"{ml_dd*100:.1f}%")
+                        m4.metric("ML Sharpe (approx)", f"{ml_sharpe:.2f}")
+
+                        # ML Quant Score
+                        f1_best = res_df.iloc[0]["F1"]
+                        ml_score = int(min(100, max(0, f1_best * 60 + (0.5 if ml_ret > bh_ret else 0) * 20 + (30 if ml_sharpe > 0.5 else 10))))
+                        st.metric("ML Quant Score", f"{ml_score}/100")
+                        st.session_state["v5_ml_score"] = ml_score
+                        st.session_state["v5_signal"] = signal_label
+                        st.session_state["v5_best_model"] = best_name
+
+        except Exception as e:
+            st.error(f"ML engine error: {e}")
+            st.info("Ensure scikit-learn is installed and the stock has sufficient history.")
+
+    # ============================================================
+    # QUANT V6 — ADVANCED RISK + FACTOR ENGINE
+    # ============================================================
+
+    st.markdown("---")
+    st.subheader("🛡️ Quant V6 — Advanced Risk + Factor Engine")
+    st.caption("Institutional-style factor and risk analytics (calculated from market data).")
+
+    v6_c1, v6_c2 = st.columns(2)
+    with v6_c1:
+        v6_symbol = st.text_input("Stock Symbol", value="RELIANCE", key="quant_v6_symbol")
+    with v6_c2:
+        v6_period = st.selectbox("Period", ["1y", "2y", "3y", "5y"], index=1, key="quant_v6_period")
+
+    if st.button("▶️ Run Risk & Factor Analysis", key="run_quant_v6", use_container_width=True):
+        try:
+            yf_sym = v6_symbol.upper() if v6_symbol.upper().endswith(".NS") else v6_symbol.upper() + ".NS"
+            hist = yf.Ticker(yf_sym).history(period=v6_period, auto_adjust=True)
+            nifty = yf.Ticker("^NSEI").history(period=v6_period, auto_adjust=True)
+
+            if hist is None or len(hist) < 60:
+                st.warning("Insufficient data.")
+            else:
+                ret = hist["Close"].pct_change().dropna()
+                vol = ret.std() * np.sqrt(252)
+                downside = ret[ret < 0].std() * np.sqrt(252) if (ret < 0).any() else 0
+                cum = (1 + ret).cumprod()
+                dd = (cum / cum.cummax() - 1).min()
+                var95 = np.percentile(ret, 5)
+                cvar95 = ret[ret <= var95].mean() if (ret <= var95).any() else var95
+
+                # Beta
+                if nifty is not None and not nifty.empty:
+                    nret = nifty["Close"].pct_change().dropna()
+                    aligned = pd.concat([ret, nret], axis=1).dropna()
+                    aligned.columns = ["s", "n"]
+                    beta = aligned["s"].cov(aligned["n"]) / aligned["n"].var() if aligned["n"].var() > 0 else np.nan
                 else:
-                    st.info("Rolling beta ke liye sufficient data nahi hai (60-day window chahiye).")
+                    beta = np.nan
 
-                # ─────────────────────────────────────────
-# PRICE TREND REGRESSION
-# ─────────────────────────────────────────
+                # Factors
+                mom = hist["Close"].iloc[-1] / hist["Close"].iloc[-21] - 1 if len(hist) > 21 else np.nan  # 1m momentum
+                mom_3m = hist["Close"].iloc[-1] / hist["Close"].iloc[-63] - 1 if len(hist) > 63 else np.nan
+                vol_factor = vol
+                trend_strength = (hist["Close"].iloc[-1] / hist["Close"].rolling(50).mean().iloc[-1] - 1) if len(hist) > 50 else np.nan
+                rel_strength = mom  # proxy vs itself; better would be vs nifty but simple
+                liquidity = hist["Volume"].tail(20).mean() if "Volume" in hist else np.nan
 
-                st.markdown("#### 📈 Linear Trend Regression")
+                # Regime
+                sma50 = hist["Close"].rolling(50).mean().iloc[-1]
+                sma200 = hist["Close"].rolling(200).mean().iloc[-1] if len(hist) > 200 else sma50
+                price = hist["Close"].iloc[-1]
+                if price > sma200 and sma50 > sma200:
+                    regime = "🟢 BULL"
+                elif price < sma200 and sma50 < sma200:
+                    regime = "🔴 BEAR"
+                else:
+                    regime = "🟡 SIDEWAYS"
+                if vol > 0.35:
+                    regime += " | HIGH VOL"
+                elif vol < 0.15:
+                    regime += " | LOW VOL"
 
-                qt_trend_rows = []
+                st.markdown("### Factor Scorecard")
+                factor_df = pd.DataFrame({
+                    "Factor": ["Momentum (1M)", "Momentum (3M)", "Volatility", "Trend Strength", "Liquidity (avg vol)", "Beta vs NIFTY"],
+                    "Value": [
+                        f"{mom*100:.2f}%" if pd.notna(mom) else "N/A",
+                        f"{mom_3m*100:.2f}%" if pd.notna(mom_3m) else "N/A",
+                        f"{vol*100:.2f}%",
+                        f"{trend_strength*100:.2f}%" if pd.notna(trend_strength) else "N/A",
+                        f"{liquidity:,.0f}" if pd.notna(liquidity) else "N/A",
+                        f"{beta:.2f}" if pd.notna(beta) else "N/A"
+                    ]
+                })
+                st.dataframe(factor_df, use_container_width=True, hide_index=True)
 
-                for qt_s in qt_valid_symbols:
-                    qt_y = qt_prices[qt_s].values
-                    qt_x = np.arange(len(qt_y))
+                st.markdown("### Risk Metrics")
+                r1, r2, r3, r4 = st.columns(4)
+                r1.metric("Ann. Volatility", f"{vol*100:.1f}%")
+                r2.metric("Downside Vol", f"{downside*100:.1f}%")
+                r3.metric("Max Drawdown", f"{dd*100:.1f}%")
+                r4.metric("VaR 95% (daily)", f"{var95*100:.2f}%")
 
-                    qt_slope2, qt_intercept2 = np.polyfit(qt_x, qt_y, 1)
-                    qt_y_pred2 = qt_slope2 * qt_x + qt_intercept2
-                    qt_ss_res2 = np.sum((qt_y - qt_y_pred2) ** 2)
-                    qt_ss_tot2 = np.sum((qt_y - qt_y.mean()) ** 2)
-                    qt_r2_2 = 1 - (qt_ss_res2 / qt_ss_tot2) if qt_ss_tot2 != 0 else 0
+                r5, r6, r7 = st.columns(3)
+                r5.metric("CVaR 95%", f"{cvar95*100:.2f}%")
+                r6.metric("Beta", f"{beta:.2f}" if pd.notna(beta) else "N/A")
+                r7.metric("Regime", regime)
 
-                    qt_trend_rows.append({
-                        "Stock": qt_s,
-                        "Trend": "📈 Uptrend" if qt_slope2 > 0 else "📉 Downtrend",
-                        "Slope (₹/day)": round(qt_slope2, 3),
-                        "R² (Trend Reliability)": round(qt_r2_2, 3),
-                    })
+                # Overall Risk Score (higher = safer)
+                risk_score = 100
+                if vol > 0.40: risk_score -= 25
+                elif vol > 0.25: risk_score -= 12
+                if abs(dd) > 0.35: risk_score -= 25
+                elif abs(dd) > 0.20: risk_score -= 12
+                if pd.notna(beta) and beta > 1.4: risk_score -= 10
+                risk_score = int(np.clip(risk_score, 0, 100))
+                st.metric("Overall Risk Score (higher = lower risk)", f"{risk_score}/100")
+                st.session_state["v6_risk_score"] = risk_score
+                st.session_state["v6_regime"] = regime
 
-                qt_trend_df = pd.DataFrame(qt_trend_rows)
-                st.dataframe(qt_trend_df, use_container_width=True, hide_index=True)
+                # Drawdown chart
+                dd_series = (cum / cum.cummax() - 1) * 100
+                fig_dd = go.Figure(go.Scatter(x=dd_series.index, y=dd_series.values, fill="tozeroy", name="Drawdown %"))
+                fig_dd.update_layout(title="Drawdown", template="plotly_dark", yaxis_title="%")
+                st.plotly_chart(fig_dd, use_container_width=True, key="v6_dd")
 
-                st.caption(
-                    "R² zyada (>0.7) ho to price ek fairly consistent/smooth trend follow kar raha hai. "
-                    "R² kam ho to price choppy/sideways move kar raha hai, trend reliable nahi hai."
-                )
+        except Exception as e:
+            st.error(f"Risk engine error: {e}")
 
-                # ─────────────────────────────────────────
-# RETURN DISTRIBUTION & PROBABILITY STATS
-# ─────────────────────────────────────────
+    # ============================================================
+    # QUANT V7 — INSTITUTIONAL RESEARCH INTELLIGENCE
+    # ============================================================
 
-                st.markdown("#### 🎲 Return Distribution & Probability Stats")
+    st.markdown("---")
+    st.subheader("🏛️ Quant V7 — Institutional Research Intelligence")
+    st.caption(
+        "Transparent multi-factor research summary. "
+        "Clearly separates real market data, calculated metrics, model predictions and AI-style interpretation. "
+        "Not equivalent to any commercial institutional platform."
+    )
 
-                qt_stats_rows = []
+    if st.button("▶️ Generate Quant Conviction Report", key="run_quant_v7", use_container_width=True):
+        # Aggregate scores from session or compute light versions
+        ml_score = st.session_state.get("v5_ml_score", 50)
+        risk_score = st.session_state.get("v6_risk_score", 60)
+        regime = st.session_state.get("v6_regime", "Unknown")
+        signal = st.session_state.get("v5_signal", "HOLD")
+        best_model = st.session_state.get("v5_best_model", "N/A")
 
-                for qt_s in qt_valid_symbols:
-                    qt_s_returns = qt_returns[qt_s]
-                    qt_stats_rows.append({
-                        "Stock": qt_s,
-                        "Mean Daily Return (%)": round(qt_s_returns.mean() * 100, 3),
-                        "Std Dev (%)": round(qt_s_returns.std() * 100, 3),
-                        "Skewness": round(qt_s_returns.skew(), 2),
-                        "Kurtosis": round(qt_s_returns.kurtosis(), 2),
-                        "P(Positive Day) %": round((qt_s_returns > 0).mean() * 100, 1),
-                    })
+        # Simple consistency proxies
+        signal_consistency = 70 if signal == "BUY" else (40 if signal == "SELL" else 55)
+        risk_consistency = risk_score
+        ml_consistency = ml_score
+        factor_consistency = 60  # neutral default if V6 not run
 
-                qt_stats_df = pd.DataFrame(qt_stats_rows)
-                st.dataframe(qt_stats_df, use_container_width=True, hide_index=True)
+        # Conviction components (transparent)
+        components = {
+            "ML Signal Strength": ml_score,
+            "Risk Profile (higher safer)": risk_score,
+            "Signal Consistency": signal_consistency,
+            "Factor Consistency (proxy)": factor_consistency,
+        }
+        conviction = int(np.mean(list(components.values())))
 
-                qt_dist_stock = st.selectbox(
-                    "Distribution dekhne ke liye stock select karo", qt_valid_symbols, key="qt_dist_select"
-                )
+        st.markdown("### BharatFinAI Quant Conviction Score")
+        st.metric("Overall Conviction", f"{conviction}/100")
+        st.progress(conviction / 100)
 
-                fig_qt_dist = px.histogram(
-                    qt_returns[qt_dist_stock] * 100,
-                    nbins=50,
-                    title=f"{qt_dist_stock} — Daily Return Distribution (%)",
-                    labels={"value": "Daily Return (%)"}
-                )
+        st.markdown("#### Score Components (transparent)")
+        for k, v in components.items():
+            st.write(f"• **{k}**: {v}/100")
 
-                st.plotly_chart(fig_qt_dist, use_container_width="stretch", key="qt_dist_histogram")
+        st.markdown("### Research Cases")
+        st.info(f"**Bull Case**: Positive momentum / ML BUY probability elevated. Regime: {regime}. Model: {best_model}.")
+        st.warning(f"**Bear Case**: Drawdown risk and volatility remain. Signal currently: {signal}.")
+        st.error("**Risk Case**: Always size positions according to personal risk tolerance. Past performance ≠ future results.")
+        st.success(f"**Quant / ML Case**: Latest ML signal = {signal}. Risk Score = {risk_score}.")
+        st.write("**Portfolio Case**: Use Quant V4 allocation tools for multi-stock exposure control.")
 
-                st.caption(
-                    "Skewness < 0 = negative tail bada hai (bade crashes bade rallies se zyada common). "
-                    "Kurtosis > 0 = 'fat tails' — extreme moves normal distribution se zyada frequent hain. "
-                    "Ye purely historical frequency hai, future guarantee nahi."
-                )
+        st.markdown("### Final Research Conclusion")
+        if conviction >= 75:
+            st.success("High quant conviction — multiple engines aligned positively. Still perform independent due diligence.")
+        elif conviction >= 55:
+            st.info("Moderate quant conviction — mixed signals. Suitable for research watchlist, not aggressive sizing.")
+        else:
+            st.warning("Low quant conviction — risk or signal engines not aligned. Prefer wait or reduce exposure.")
 
+        st.caption(
+            "REAL MARKET DATA → yfinance prices/volumes | "
+            "CALCULATED METRICS → returns, vol, drawdown, beta | "
+            "MODEL PREDICTIONS → ML classifiers (V5) | "
+            "AI-GENERATED INTERPRETATION → this summary layer"
+        )
+
+        st.session_state["v7_conviction"] = conviction
+
+    # ============================================================
+    # RESEARCH DISCLAIMER
+    # ============================================================
+
+    st.divider()
+
+    st.caption(
+        "⚠️ Quant Research Disclaimer: Historical backtests do not "
+        "guarantee future returns. Results can be affected by "
+        "look-ahead bias, survivorship bias, liquidity, taxes, "
+        "slippage, transaction costs and overfitting. "
+        "Use this module for research and education, not as a "
+        "standalone investment decision engine."
+    )
+    
 with tab5:
 
             st.markdown("## 🎲 Monte Carlo Simulation")
@@ -6643,85 +11599,8 @@ with tab5:
                         f"₹{final_prices.min():.2f}"
                     )
 with tab6:
-
-            st.markdown("## 🛡️ Risk Engine (VaR)")
-
-            risk_symbol = st.text_input(
-                "Stock Symbol",
-                value="RELIANCE",
-                key="risk_stock"
-            ).strip().upper()
-
-            risk_period = st.selectbox(
-                "Period",
-                ["6mo", "1y", "2y", "5y"],
-                index=1,
-                key="risk_period"
-            )
-
-            investment = st.number_input(
-                "Investment Amount (₹)",
-                min_value=1000,
-                value=100000,
-                step=1000,
-                key="risk_investment"
-            )
-
-            if st.button("Calculate Risk", key="calculate_risk_btn"):
-                import numpy as np
-
-                clean_symbol = risk_symbol.replace(" ", "").replace("$", "")
-                yf_symbol = clean_symbol if clean_symbol.endswith(".NS") else clean_symbol + ".NS"
-
-                st.info(f"Fetching data for: {yf_symbol}")
-
-                df = yf.Ticker(yf_symbol).history(period=risk_period)
-
-                if df.empty:
-                    st.error("Data nahi mila. Symbol check karo. Example: RELIANCE, TCS, INFY, SBIN")
-                else:
-                    returns = df["Close"].pct_change().dropna()
-
-                    if returns.empty:
-                        st.error("Enough price data nahi mila risk calculate karne ke liye.")
-                    else:
-                        var95 = np.percentile(returns, 5)
-                        var99 = np.percentile(returns, 1)
-
-                        loss95 = investment * abs(var95)
-                        loss99 = investment * abs(var99)
-
-                        volatility = returns.std() * np.sqrt(252) * 100
-
-                        cumulative = (1 + returns).cumprod()
-                        rolling_max = cumulative.cummax()
-                        drawdown = ((cumulative - rolling_max) / rolling_max).min() * 100
-
-                        c1, c2, c3 = st.columns(3)
-
-                        c1.metric("VaR 95%", f"₹{loss95:,.0f}")
-                        c2.metric("VaR 99%", f"₹{loss99:,.0f}")
-                        c3.metric("Volatility", f"{volatility:.2f}%")
-
-                        st.metric("Maximum Drawdown", f"{drawdown:.2f}%")
-
-                        if volatility < 20:
-                            risk_score = "LOW RISK 🟢"
-                        elif volatility < 35:
-                            risk_score = "MEDIUM RISK 🟡"
-                        else:
-                            risk_score = "HIGH RISK 🔴"
-
-                        st.success(f"Risk Classification: {risk_score}")
-
-                        st.info(
-                            f"""
-₹{investment:,.0f} investment par:
-
-- 95% confidence par ek din me approx ₹{loss95:,.0f} se jyada loss expected nahi.  
-- 99% confidence par approx ₹{loss99:,.0f} se jyada loss expected  nahi.
-                            """
-                        )
+    # V8 Risk Engine is isolated in ui/risk_tab.py so the legacy app remains intact.
+    render_risk_tab()
 
 with tab7:
     st.markdown("## 📊 Portfolio Optimizer")
@@ -6935,6 +11814,8 @@ with tab7:
         st.subheader("📊 Correlation Heatmap")
 
         try:
+            import matplotlib.pyplot as plt 
+            import seaborn as sns
             corr_matrix = returns.corr()
 
             fig, ax = plt.subplots(figsize=(8,6))
@@ -6954,7 +11835,13 @@ with tab7:
 
         st.subheader("🎯 Diversification Score")
 
-        avg_corr = corr_matrix.abs().mean().mean()
+        if corr_matrix is not None and not corr_matrix.empty:
+            avg_corr = corr_matrix.abs().mean().mean()
+            div_score = max(0, min(100, int((1 - avg_corr) * 100)))
+            st.metric("Diversification Score", f"{div_score}/100")
+        else:
+            div_score = None
+            st.info("Diversification score unavailable because correlation data could not be calculated.")
 
         div_score = int((1 - avg_corr) * 100)
 
