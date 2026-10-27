@@ -75,7 +75,7 @@ def garch_volatility(returns: pd.Series, annualize: bool = True) -> Dict[str, An
     r = returns.dropna().astype(float)
     n = len(r)
     if n < 60:
-        return {"ok": False, "message": "Need \~60+ obs for GARCH.", "reliability": _reliability(n, min_obs=60)}
+        return {"ok": False, "message": "Need ~60+ obs for GARCH.", "reliability": _reliability(n, min_obs=60)}
     try:
         from arch import arch_model
     except ImportError:
@@ -100,15 +100,49 @@ def garch_volatility(returns: pd.Series, annualize: bool = True) -> Dict[str, An
         persistence = params["alpha"] + params["beta"] if pd.notna(params["alpha"]) else np.nan
         series = pd.Series(cond_vol.values, index=r.index[-len(cond_vol):], name="GARCH_Vol")
         flags = []
-        converged = True
+        raw_convergence_flag = getattr(res, "convergence_flag", None)
+
+        try:
+            convergence_flag = (
+                int(raw_convergence_flag)
+                if raw_convergence_flag is not None
+                else None
+            )
+        except (TypeError, ValueError, OverflowError):
+            convergence_flag = None
+
+        converged = convergence_flag == 0
+
+        if convergence_flag is None:
+            flags.append("Optimizer convergence status unavailable.")
+        elif not converged:
+            flags.append(
+                f"GARCH optimizer did not converge (flag={convergence_flag})."
+            )
+
         if pd.notna(persistence) and persistence >= 1.0:
             flags.append("High persistence (alpha+beta >= 1).")
             converged = False
+
         return {
-            "ok": True, "current_vol": float(series.iloc[-1]), "forecast_vol": float(vol_f),
-            "series": series, "params": params, "persistence": float(persistence) if pd.notna(persistence) else None,
-            "loglikelihood": float(res.loglikelihood), "aic": float(res.aic),
-            "annualized": annualize, "reliability": _reliability(n, converged=converged, min_obs=60, extra_flags=flags),
+            "ok": True,
+            "current_vol": float(series.iloc[-1]),
+            "forecast_vol": float(vol_f),
+            "series": series,
+            "params": params,
+            "persistence": (
+                float(persistence) if pd.notna(persistence) else None
+            ),
+            "loglikelihood": float(res.loglikelihood),
+            "aic": float(res.aic),
+            "annualized": annualize,
+            "convergence_flag": convergence_flag,
+            "reliability": _reliability(
+                n,
+                converged=converged,
+                min_obs=60,
+                extra_flags=flags,
+            ),
             "method": "GARCH(1,1)",
         }
     except Exception as e:
